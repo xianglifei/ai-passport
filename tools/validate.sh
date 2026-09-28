@@ -55,9 +55,14 @@ run_static_checks() {
         -o "${test_dir}/test_bsp_audio_recovery"
     "${test_dir}/test_bsp_audio_recovery"
     for demo in audio low_power ble wifi; do
+        # --gc-sections 是 GNU ld 参数;macOS 的 ld 用 -dead_strip 达成同一目的。
+        local gc_flag="-Wl,--gc-sections"
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            gc_flag="-Wl,-dead_strip"
+        fi
         "${CC:-cc}" -std=c11 -Wall -Wextra -Werror \
             -ffunction-sections -fdata-sections -Itests/demo_stubs -Imain \
-            "tests/test_demo_${demo}_runtime.c" -Wl,--gc-sections \
+            "tests/test_demo_${demo}_runtime.c" "${gc_flag}" \
             -o "${test_dir}/test_demo_${demo}_runtime"
         "${test_dir}/test_demo_${demo}_runtime"
     done
