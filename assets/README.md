@@ -17,6 +17,12 @@ Store reusable font files and generated font sources in `fonts/`.
 - Check Flash and internal-RAM impact before adding a font; the ESP32-C3 has no PSRAM.
 - Do not commit fonts whose license does not permit redistribution.
 
+| File | Size and content | Use and source |
+| --- | --- | --- |
+| [`fonts/app_font_16.c`](fonts/app_font_16.c) | 16px, ASCII + `·` `！` + 88 app-specific CJK glyphs | Body/hint subset font for the pomodoro app. Noto Sans SC Regular (SIL OFL 1.1, from [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) SubsetOTF/SC), generated with lv_font_conv 1.5.3, bpp 4, uncompressed. Character list and conversion command: `fonts/gen_app_fonts.sh`. |
+| [`fonts/app_font_20.c`](fonts/app_font_20.c) | 20px, same glyph range | Title/card text subset font for the pomodoro app. Same source, license, and options as above. |
+| [`fonts/gen_app_fonts.sh`](fonts/gen_app_fonts.sh) | shell script | Reproducible font conversion script: pins the glyph list, sizes, and lv_font_conv version; regenerates the two `.c` files above. |
+
 ## Images
 
 Store reusable source images and generated display assets in `images/`.

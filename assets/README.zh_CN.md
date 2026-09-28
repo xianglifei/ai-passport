@@ -15,6 +15,12 @@
 - 添加字库前评估 Flash 与内部 RAM 影响；ESP32-C3 无 PSRAM。
 - 不提交许可不允许分发的字库。
 
+| 文件 | 字级与内容 | 用途与来源 |
+| --- | --- | --- |
+| [`fonts/app_font_16.c`](fonts/app_font_16.c) | 16px，ASCII + `·` `！` + 88 个应用用汉字 | 番茄钟应用正文/提示子集字库。Noto Sans SC Regular（SIL OFL 1.1，来源 [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) SubsetOTF/SC），lv_font_conv 1.5.3 生成，bpp 4、不压缩。字符清单与转换命令见 `fonts/gen_app_fonts.sh`。 |
+| [`fonts/app_font_20.c`](fonts/app_font_20.c) | 20px，字符范围同上 | 番茄钟应用标题/卡片文字子集字库。来源、许可与生成参数同上。 |
+| [`fonts/gen_app_fonts.sh`](fonts/gen_app_fonts.sh) | shell 脚本 | 可复现的字体转换脚本：固化字符清单、字号与 lv_font_conv 版本，重新生成上面两个 `.c` 文件。 |
+
 ## 图片（images）
 
 可复用的源图与生成的显示资产放在 `images/`。
