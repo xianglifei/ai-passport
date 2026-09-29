@@ -39,13 +39,6 @@ bool quota_parse_json(const char *body, quota_data_t *out);
 // 剩余比例,基点(万分比)0..10000(total=0 返回 0)。整数运算,进度条/百分比共用。
 uint32_t quota_remaining_bps(const quota_window_t *w);
 
-// 距重置的人化倒计时,写入 buf:
-//   reset_ms==0 → "--";已过 → "即将刷新";
-//   <1h → "N分后";<1天 → "N小时后";否则 "N天后"。
-// now_sec 与 reset_ms 同为本地墙钟口径(reset_ms/1000 与 now_sec 直接相减)。
-void quota_fmt_countdown(uint64_t now_sec, uint64_t reset_ms,
-                         char *buf, size_t len);
-
 // 重置时刻的钟面:"HH:MM";若不在 now_sec 所在的自然日,带星期前缀 "周X HH:MM"。
 void quota_fmt_reset_time(uint64_t now_sec, uint64_t reset_ms,
                           char *buf, size_t len);

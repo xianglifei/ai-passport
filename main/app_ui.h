@@ -32,7 +32,7 @@ void app_ui_dash_set_net(app_ui_net_t net);
 // 页脚一行文本(由 main 组装:上次更新/下次轮询/失败原因等),state=true 红色。
 void app_ui_dash_set_footer(const char *text, bool alert);
 
-// 每秒调用(墙钟推进后):重算两张卡的"刷新时刻/倒计时"相对文案。
+// 每秒调用(墙钟推进后):重算两张卡的重置时刻文案。
 void app_ui_dash_tick(uint64_t wall_sec);
 
 // 配网设置页:三行说明/状态 + 底部提示;刷新用 setup_update。

@@ -28,8 +28,8 @@ static const char *TAG = "app_ui";
 
 // 与 assets/fonts/gen_app_fonts.sh 的字符清单保持一致;开机自检逐字核对。
 static const char APP_GLYPH_SET[] =
-    "额度小时周限额刷新即将连接未配置更新下次失败重试长按返回热点手机浏览器"
-    "打开正在联网等待稍可设置分后时天入启址络错误效法解超长接口拒绝"
+    "额度小时周限额刷新连接未配置更新下次失败重试长按返回热点手机浏览器"
+    "打开正在联网等待稍可设置入启址络错误效法解超长接口拒绝"
     "一二三四五六日响应析客户端初始失败";
 
 LV_FONT_DECLARE(app_font_16);
@@ -48,8 +48,8 @@ typedef struct {
     lv_obj_t *panel;
     lv_obj_t *reset_time;               // "14:52 刷新"
     lv_obj_t *num;                      // 已用百分比大数字
-    lv_obj_t *bar_fill;
-    lv_obj_t *countdown;                // "2小时后"
+    lv_obj_t *bar_bg;                   // 剩余段(暗色)
+    lv_obj_t *bar_fill;                 // 已用段(亮色,自左向右生长)
 } card_t;
 static card_t s_card[2];
 static lv_obj_t *s_footer;
@@ -162,12 +162,13 @@ static void verify_glyphs(const lv_font_t *font) {
 }
 
 // ---------------------------------------------------------------------------
-// 限额卡:标题行(名称+重置时刻)/已用百分比大数字/剩余比例条/倒计时。
-// 卡内纵向分带(标题 8-26 / 数字 28-78 / 比例条 90-98 / 倒计时 102-118),
-// 各带互不侵入;文案最长项"100%"约 111px、"24小时后"约 80px,均远小于 192px 内容宽。
+// 限额卡:标题行(名称+重置时刻)/已用百分比大数字/两段式比例条。
+// 卡内三条横向分带(标题 8-26 / 数字 30-78 / 比例条 86-94),互不侵入;
+// 重置时刻已在标题行右上,不再放倒计时文案。
+// 比例条两态强对比:左亮段=已用(随用量生长),右暗段=剩余,同色系不同明度。
 static void card_build(uint32_t slot, int y, const char *title) {
     card_t *c = &s_card[slot];
-    lv_obj_t *panel = make_panel(s_scr, 12, y, 216, 122, lv_color_hex(COL_PANEL));
+    lv_obj_t *panel = make_panel(s_scr, 12, y, 216, 110, lv_color_hex(COL_PANEL));
     c->panel = panel;
 
     lv_obj_t *t = make_label(panel, title, &app_font_16, lv_color_hex(COL_SUB));
@@ -176,17 +177,14 @@ static void card_build(uint32_t slot, int y, const char *title) {
     c->reset_time = make_label(panel, "--:--", &app_font_16, lv_color_hex(COL_SUB));
     lv_obj_align(c->reset_time, LV_ALIGN_TOP_RIGHT, -12, 8);
 
-    // 已用百分比是用户主看项;剩余多少由比例条与配色表达。
+    // 已用百分比是用户主看项。
     c->num = make_label(panel, "--", &lv_font_montserrat_48, lv_color_hex(COL_SUB));
-    lv_obj_set_pos(c->num, 12, 28);
+    lv_obj_set_pos(c->num, 12, 30);
 
-    lv_obj_t *bar_bg = make_panel(panel, 12, 90, 192, 8, lv_color_hex(COL_EMPTY));
-    lv_obj_set_style_radius(bar_bg, 4, 0);
-    c->bar_fill = make_panel(bar_bg, 0, 0, 0, 8, lv_color_hex(COL_REST));
+    c->bar_bg = make_panel(panel, 12, 86, 192, 8, lv_color_hex(COL_EMPTY));
+    lv_obj_set_style_radius(c->bar_bg, 4, 0);
+    c->bar_fill = make_panel(c->bar_bg, 0, 0, 0, 8, lv_color_hex(COL_REST));
     lv_obj_set_style_radius(c->bar_fill, 4, 0);
-
-    c->countdown = make_label(panel, "", &app_font_16, lv_color_hex(COL_SUB));
-    lv_obj_set_pos(c->countdown, 12, 102);
 }
 
 // 剩余比例 → 主题色:充足=青、偏低=金、告急=红;快照数据一律灰。
@@ -196,7 +194,7 @@ static uint32_t color_for(uint32_t bps) {
     return COL_WORK;
 }
 
-// 单卡整绘:大数字=已用百分比;比例条=剩余量;数据无效时显示占位。
+// 单卡整绘:大数字=已用百分比;比例条亮段=已用、暗段=剩余;无效数据显示占位。
 static void card_update(uint32_t slot, const quota_window_t *w) {
     card_t *c = &s_card[slot];
     if (!c->panel) return;
@@ -204,41 +202,38 @@ static void card_update(uint32_t slot, const quota_window_t *w) {
     if (!w || !w->valid) {
         lv_label_set_text(c->num, "--");
         lv_obj_set_style_text_color(c->num, lv_color_hex(COL_SUB), 0);
-        lv_obj_set_style_text_color(c->countdown, lv_color_hex(COL_SUB), 0);
-        lv_label_set_text(c->countdown, "--");
+        lv_obj_set_style_bg_color(c->bar_bg, lv_color_hex(COL_EMPTY), 0);
         lv_obj_set_size(c->bar_fill, 0, 8);
         return;
     }
 
     uint32_t bps = quota_remaining_bps(w);
+    uint32_t used_bps = 10000U - bps;
     uint32_t color = s_from_snapshot ? COL_SUB : color_for(bps);
-    uint32_t used_pct = (10000U - bps) / 100U;
-    lv_label_set_text_fmt(c->num, "%lu%%", (unsigned long)used_pct);
-    lv_obj_set_style_text_color(c->num, lv_color_hex(color), 0);
-    lv_obj_set_style_text_color(c->countdown, lv_color_hex(color), 0);
 
-    uint32_t bar_w = (uint32_t)(192U * bps / 10000U);
-    lv_obj_set_size(c->bar_fill, (int32_t)bar_w, 8);
+    lv_label_set_text_fmt(c->num, "%lu%%", (unsigned long)(used_bps / 100U));
+    lv_obj_set_style_text_color(c->num, lv_color_hex(color), 0);
+
+    // 同一主题色两种明度:暗段=剩余,亮段=已用,对比一眼可辨。
+    lv_obj_set_style_bg_color(c->bar_bg, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(c->bar_bg, 45, 0);
+    lv_obj_set_size(c->bar_fill, (int32_t)(192U * used_bps / 10000U), 8);
     lv_obj_set_style_bg_color(c->bar_fill, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(c->bar_fill, LV_OPA_COVER, 0);
 }
 
-// 相对文案(重置时刻/倒计时)每秒重算;时钟未同步(wall_sec==0)时保持占位。
+// 重置时刻每秒重算;时钟未同步(wall_sec==0)时保持占位。
 static void card_update_times(uint32_t slot, const quota_window_t *w,
                               uint64_t wall_sec) {
     card_t *c = &s_card[slot];
     if (!c->panel) return;
     if (!w || !w->valid || !w->reset_ms || wall_sec == 0) {
         lv_label_set_text(c->reset_time, "--:--");
-        if (w && w->valid) {
-            lv_label_set_text(c->countdown, "--");
-        }
         return;
     }
     char buf[24];
     quota_fmt_reset_time(wall_sec, w->reset_ms, buf, sizeof(buf));
     lv_label_set_text_fmt(c->reset_time, "%s 刷新", buf);
-    quota_fmt_countdown(wall_sec, w->reset_ms, buf, sizeof(buf));
-    lv_label_set_text(c->countdown, buf);
 }
 
 void app_ui_show_dash(bool has_key) {
@@ -264,8 +259,8 @@ void app_ui_show_dash(bool has_key) {
         return;
     }
 
-    card_build(0, 40, "5 小时限额");
-    card_build(1, 168, "周限额");
+    card_build(0, 48, "5 小时限额");
+    card_build(1, 178, "周限额");
 
     s_footer = make_label(s_scr, "等待联网...", &s_font_16_sym,
                           lv_color_hex(COL_SUB));

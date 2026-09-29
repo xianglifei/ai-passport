@@ -59,7 +59,7 @@ bool quota_fetch_now(const char *key, quota_data_t *out,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) {
-        snprintf(errbuf, errlen, "客户端初始化失败");
+        snprintf(errbuf, errlen, "网络错误");
         return false;
     }
     esp_http_client_set_header(client, "Authorization", key);

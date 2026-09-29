@@ -86,24 +86,6 @@ static void test_remaining_bps(void) {
     assert(quota_remaining_bps(NULL) == 0);
 }
 
-static void test_fmt_countdown(void) {
-    char buf[32];
-    quota_fmt_countdown(1000, 0, buf, sizeof(buf));
-    assert(strcmp(buf, "--") == 0);
-    quota_fmt_countdown(1790658074, 1790658074125ULL, buf, sizeof(buf));  // 已过
-    assert(strcmp(buf, "即将刷新") == 0);
-    quota_fmt_countdown(0, 3540 * 1000ULL, buf, sizeof(buf));             // 59 分
-    assert(strcmp(buf, "59分后") == 0);
-    quota_fmt_countdown(0, 3660 * 1000ULL, buf, sizeof(buf));             // 1 小时
-    assert(strcmp(buf, "1小时后") == 0);
-    quota_fmt_countdown(0, (2 * 3600U + 18U * 60U) * 1000ULL, buf, sizeof(buf));
-    assert(strcmp(buf, "2小时后") == 0);                                  // 分钟不显示
-    quota_fmt_countdown(0, (3 * 86400U + 2 * 3600U) * 1000ULL, buf, sizeof(buf));
-    assert(strcmp(buf, "3天后") == 0);                                    // 小时不显示
-    quota_fmt_countdown(0, 60 * 1000ULL, buf, sizeof(buf));               // 1 分
-    assert(strcmp(buf, "1分后") == 0);
-}
-
 static void test_fmt_reset_time(void) {
     char buf[32];
     // 2026-09-28 是周一;本地口径的墙钟秒直接用 civil 工具构造。
@@ -132,7 +114,6 @@ int main(void) {
     test_parse_missing_remaining_falls_back();
     test_parse_rejects_bad_payloads();
     test_remaining_bps();
-    test_fmt_countdown();
     test_fmt_reset_time();
     printf("test_quota_model: all passed\n");
     return 0;

@@ -87,29 +87,6 @@ uint32_t quota_remaining_bps(const quota_window_t *w) {
     return (uint32_t)((uint64_t)w->remaining * 10000U / w->total);
 }
 
-void quota_fmt_countdown(uint64_t now_sec, uint64_t reset_ms,
-                         char *buf, size_t len) {
-    if (len == 0) return;
-    if (!reset_ms) {
-        snprintf(buf, len, "--");
-        return;
-    }
-    uint64_t reset_sec = reset_ms / 1000U;
-    if (reset_sec <= now_sec) {
-        snprintf(buf, len, "即将刷新");
-        return;
-    }
-    // 屏宽有限且分钟级精度无信息量:只到小时/天。
-    uint64_t diff = reset_sec - now_sec;
-    if (diff < 3600U) {
-        snprintf(buf, len, "%llu分后", (unsigned long long)((diff + 59U) / 60U));
-    } else if (diff < 86400U) {
-        snprintf(buf, len, "%llu小时后", (unsigned long long)(diff / 3600U));
-    } else {
-        snprintf(buf, len, "%llu天后", (unsigned long long)(diff / 86400U));
-    }
-}
-
 void quota_fmt_reset_time(uint64_t now_sec, uint64_t reset_ms,
                           char *buf, size_t len) {
     static const char *const WEEKDAY[] = { "一", "二", "三", "四", "五", "六", "日" };
