@@ -21,7 +21,8 @@ typedef struct {
     uint32_t total;         // usage:窗口总额度(积分)
     uint32_t used;          // currentValue:已用
     uint32_t remaining;     // remaining;接口缺失时按 total-used 兜底
-    uint64_t reset_ms;      // nextResetTime;0 = 接口未给
+    uint64_t reset_ms;      // 下次重置,本地墙钟口径(quota_fetch 已折算
+                            // UTC+8;0 = 接口未给)。与 app_clock 纪元同帧。
 } quota_window_t;
 
 typedef struct {

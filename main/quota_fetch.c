@@ -36,6 +36,11 @@ static esp_err_t on_http_event(esp_http_client_event_t *evt) {
     return ESP_OK;
 }
 
+// 本地时区偏移(UTC+8):与 main/app_wifi 的 SNTP 折算约定一致。
+// 接口的 nextResetTime 是 UTC 纪元毫秒;应用内部时间口径是本地墙钟,
+// 差 8 小时会把"3 小时后刷新"显示成"即将刷新",此处统一折算。
+#define APP_TZ_OFFSET_SEC (8 * 3600)
+
 bool quota_fetch_now(const char *key, quota_data_t *out,
                      char *errbuf, size_t errlen) {
     static resp_buf_t resp;               // 静态区:不让 2KB 缓冲占任务栈
@@ -92,5 +97,9 @@ bool quota_fetch_now(const char *key, quota_data_t *out,
         }
         return false;
     }
+    // 重置时刻折算到本地墙钟口径(见文件头注释);此后全应用不再做时区换算。
+    uint64_t tz_ms = (uint64_t)APP_TZ_OFFSET_SEC * 1000ULL;
+    if (out->win5h.reset_ms) out->win5h.reset_ms += tz_ms;
+    if (out->week.reset_ms) out->week.reset_ms += tz_ms;
     return true;
 }
