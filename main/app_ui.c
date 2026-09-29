@@ -30,7 +30,7 @@ static const char *TAG = "app_ui";
 static const char APP_GLYPH_SET[] =
     "额度小时周限额刷新连接未配置更新下次失败重试长按返回热点手机浏览器"
     "打开正在联网等待稍可设置时入启址络错误效法解超长接口拒绝"
-    "一二三四五六日响应析客户端初始失败番茄工分休作完于弃同条翻页毕";
+    "一二三四五六日响应析客户端初始番茄工分休作完于弃同条翻页毕中息钟";
 
 LV_FONT_DECLARE(app_font_16);
 LV_FONT_DECLARE(app_font_20);
@@ -342,29 +342,39 @@ void app_ui_dash_set_focus_dot(bool running, bool work) {
 }
 
 // ---------------------------------------------------------------------------
-// 番茄页:空闲=两个直接动作入口;倒计时=圆环+剩余;DONE=完成横幅
+// 番茄页:视觉与额度页同一套语言(深底卡片)。空闲=两张可按卡片(上=工作/下=休息);
+// 倒计时=胶囊+圆环;DONE=完成横幅。方向键一律用 LVGL 符号宏(字面 ↑↓ 字体缺字)。
 // ---------------------------------------------------------------------------
+static void focus_card(lv_obj_t *parent, int y, lv_color_t dot, bool up,
+                       const char *main_txt) {
+    lv_obj_t *card = make_panel(parent, 12, y, 216, 86, lv_color_hex(COL_PANEL));
+    lv_obj_t *d = make_circle(card, 10, dot);
+    lv_obj_set_pos(d, 16, 24);
+    lv_obj_t *main_label = make_label(card, main_txt, &app_font_20,
+                                      lv_color_hex(COL_TEXT));
+    lv_obj_align(main_label, LV_ALIGN_LEFT_MID, 36, -10);
+    lv_obj_t *sub = make_label(card,
+                               up ? "按 " LV_SYMBOL_UP " 开始"
+                                  : "按 " LV_SYMBOL_DOWN " 开始",
+                               &s_font_16_sym, lv_color_hex(COL_SUB));
+    lv_obj_align(sub, LV_ALIGN_LEFT_MID, 36, 12);
+    lv_obj_t *arrow = make_label(card, up ? LV_SYMBOL_UP : LV_SYMBOL_DOWN,
+                                 &s_font_16_sym, dot);
+    lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -16, 0);
+}
+
 void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending) {
     new_screen();
 
     if (mode == APP_UI_FOCUS_IDLE) {
         lv_obj_t *title = make_label(s_scr, "番茄钟", &app_font_20,
                                      lv_color_hex(COL_TEXT));
-        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 46);
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
-        lv_obj_t *l1 = make_label(s_scr, "开始工作 25 分钟", &app_font_16,
-                                  lv_color_hex(COL_TEXT));
-        lv_obj_align(l1, LV_ALIGN_CENTER, 0, -34);
-        lv_obj_t *d1 = make_circle(s_scr, 10, lv_color_hex(COL_WORK));
-        lv_obj_align_to(d1, l1, LV_ALIGN_OUT_LEFT_MID, -14, 0);
+        focus_card(s_scr, 44, lv_color_hex(COL_WORK), true, "工作 25 分钟");
+        focus_card(s_scr, 140, lv_color_hex(COL_REST), false, "休息 10 分钟");
 
-        lv_obj_t *l2 = make_label(s_scr, "开始休息 10 分钟", &app_font_16,
-                                  lv_color_hex(COL_TEXT));
-        lv_obj_align(l2, LV_ALIGN_CENTER, 0, 6);
-        lv_obj_t *d2 = make_circle(s_scr, 10, lv_color_hex(COL_REST));
-        lv_obj_align_to(d2, l2, LV_ALIGN_OUT_LEFT_MID, -14, 0);
-
-        s_focus_pend = make_label(s_scr, "", &app_font_16,
+        s_focus_pend = make_label(s_scr, "", &s_font_16_sym,
                                   lv_color_hex(COL_GOLD));
         lv_obj_align(s_focus_pend, LV_ALIGN_BOTTOM_MID, 0, -34);
         app_ui_focus_set_pending(pending);
@@ -387,8 +397,9 @@ void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending) {
         lv_obj_t *done = make_label(s_scr, "工作完成！", &app_font_20,
                                     lv_color_hex(COL_GOLD));
         lv_obj_align(done, LV_ALIGN_CENTER, 0, 42);
-        lv_obj_t *next = make_label(s_scr, "按 ↓ 开始休息", &app_font_20,
-                                    lv_color_hex(COL_TEXT));
+        lv_obj_t *next = make_label(s_scr,
+                                    "按 " LV_SYMBOL_DOWN " 开始休息",
+                                    &s_font_20_sym, lv_color_hex(COL_TEXT));
         lv_obj_align(next, LV_ALIGN_CENTER, 0, 78);
     } else {
         bool work = mode == APP_UI_FOCUS_WORK;
@@ -420,12 +431,17 @@ void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending) {
                                   lv_color_hex(COL_TEXT));
         lv_obj_align(s_focus_time, LV_ALIGN_CENTER, 0, -8);
 
-        s_focus_finish = make_label(s_scr, "", &app_font_16, lv_color_hex(COL_SUB));
+        s_focus_finish = make_label(s_scr, "", &s_font_16_sym,
+                                    lv_color_hex(COL_SUB));
         lv_obj_align(s_focus_finish, LV_ALIGN_CENTER, 0, 78);
     }
 
-    lv_obj_t *hint = make_label(s_scr, "长按 ↑↓ 翻页", &s_font_16_sym,
-                                lv_color_hex(COL_SUB));
+    lv_obj_t *hint = make_label(
+        s_scr,
+        mode == APP_UI_FOCUS_WORK || mode == APP_UI_FOCUS_REST
+            ? "长按 OK 放弃 · 长按 " LV_SYMBOL_UP LV_SYMBOL_DOWN " 翻页"
+            : "长按 " LV_SYMBOL_UP LV_SYMBOL_DOWN " 翻页",
+        &s_font_16_sym, lv_color_hex(COL_SUB));
     lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
 
     load_screen();
