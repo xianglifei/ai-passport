@@ -48,9 +48,12 @@ typedef enum {
     APP_UI_FOCUS_DONE,
 } app_ui_focus_mode_t;
 
-// 番茄页:mode 决定形态(空闲=两个直接动作入口;WORK/REST=倒计时圆环;
-// DONE=完成横幅)。pending 为待上报会话数(空闲页展示,0 不显示)。
-void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending);
+// 番茄页:mode 决定形态(空闲=两张卡片,work_selected 指示当前焦点卡;
+// WORK/REST=倒计时圆环;DONE=完成横幅)。pending 为待上报会话数(0 不显示)。
+void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending,
+                       bool work_selected);
+// 空闲态下焦点在工作/休息卡之间移动:只改卡片高亮,不重建页面。
+void app_ui_focus_select(bool work_selected);
 // 倒计时中每 250ms 调用:剩余 mm:ss/圆环进度/"完成于 HH:MM"(finish_min<0 不显示)。
 void app_ui_focus_update(uint32_t remain_sec, uint32_t total_sec, int32_t finish_min);
 // 空闲页待上报条数变化时调用。

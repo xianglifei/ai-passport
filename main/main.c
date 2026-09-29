@@ -97,6 +97,7 @@ typedef struct {
     uint64_t clock_saved_ms;    // 上次续存时的单调毫秒
 
     app_page_t page;
+    uint8_t focus_sel;          // 三焦点循环:0=额度页 1=工作卡 2=休息卡
 
     QueueHandle_t work_queue;
 
@@ -171,9 +172,7 @@ static void update_focus_dot(void) {
                               s_app.model.state == FOCUS_STATE_WORK_RUNNING);
 }
 
-static void go_dash(void) {
-    // Key 可能在配网页刚被写入,每次回仪表盘前重读(单键 NVS 读,开销微小)。
-    app_store_load_key(s_app.api_key, sizeof(s_app.api_key));
+static void show_dash_page(void) {
     bool has_key = s_app.api_key[0] != 0;
     s_app.page = PAGE_DASH;
     app_ui_show_dash(has_key);
@@ -183,13 +182,32 @@ static void go_dash(void) {
     }
     app_ui_dash_set_net(map_net(app_wifi_state()));
     update_focus_dot();
-    // 配网页可能刚换了 Key/刚连上网:回仪表盘即安排一次拉取(在线才会真正发出)。
-    if (has_key) s_app.next_fetch_ms = now_ms();
 }
 
-static void go_focus(void) {
-    s_app.page = PAGE_FOCUS;
-    app_ui_show_focus(focus_ui_mode(), s_app.focus.count);
+static void go_dash(void) {
+    // Key 可能在配网页刚被写入,回仪表盘前重读(单键 NVS 读,开销微小)。
+    app_store_load_key(s_app.api_key, sizeof(s_app.api_key));
+    show_dash_page();
+    // 配网页可能刚换了 Key/刚连上网:回仪表盘即安排一次拉取(在线才会真正发出)。
+    if (s_app.api_key[0]) s_app.next_fetch_ms = now_ms();
+}
+
+// 焦点沿三位置循环移动(dir=+1 下 / +2 上),页面跟着焦点走。
+static void cycle_focus(int dir) {
+    static const char *const SEL_NAME[] = { "额度页", "工作卡", "休息卡" };
+    s_app.focus_sel = (uint8_t)((s_app.focus_sel + dir) % 3U);
+    ESP_LOGI(TAG, "焦点: %s", SEL_NAME[s_app.focus_sel]);
+    if (s_app.focus_sel == 0) {
+        if (s_app.page != PAGE_DASH) show_dash_page();
+        return;
+    }
+    bool work_sel = s_app.focus_sel == 1;
+    if (s_app.page != PAGE_FOCUS) {
+        s_app.page = PAGE_FOCUS;
+        app_ui_show_focus(focus_ui_mode(), s_app.focus.count, work_sel);
+    } else {
+        app_ui_focus_select(work_sel);
+    }
 }
 
 // 开始一个番茄会话;时钟未同步也能计时,只是该会话不入库。
@@ -198,9 +216,10 @@ static void start_focus(bool work) {
                    : focus_model_start_rest(&s_app.model, now_ms());
     if (!ok) return;
     s_app.session_start_wall = wall_sec();
+    s_app.focus_sel = work ? 1 : 2;
     s_app.page = PAGE_FOCUS;
     app_ui_show_focus(work ? APP_UI_FOCUS_WORK : APP_UI_FOCUS_REST,
-                      s_app.focus.count);
+                      s_app.focus.count, work);
 }
 
 static void enter_setup(void) {
@@ -366,44 +385,50 @@ static void consume_sync_result(void) {
 // ---------------------------------------------------------------------------
 // 输入
 // ---------------------------------------------------------------------------
+// 上下键在三个焦点位循环(额度页→工作→休息→额度页),页面跟着焦点走。
+static void handle_nav_key(bsp_btn_t btn) {
+    cycle_focus(btn == BSP_BTN_DOWN ? 1 : 2);
+}
+
 static void handle_dash_input(bsp_btn_t btn, bsp_btn_ev_t ev) {
-    if (ev != BSP_BTN_CLICK && ev != BSP_BTN_LONG) return;
-    if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-        go_focus();                             // 额度页无页内用途:上下键即翻页
+    if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
+        (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG)) {
+        handle_nav_key(btn);
         return;
     }
     if (btn == BSP_BTN_OK) {
-        if (ev == BSP_BTN_CLICK) request_fetch(true);
+        if (ev == BSP_BTN_CLICK) request_fetch(true);   // 激活额度页=刷新数据
         else enter_setup();
     }
 }
 
 static void handle_focus_input(bsp_btn_t btn, bsp_btn_ev_t ev) {
-    // 全状态通用:长按 ↑/↓ 翻回额度页,计时后台继续。
-    if (ev == BSP_BTN_LONG && (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
-        go_dash();
+    if ((btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) &&
+        (ev == BSP_BTN_CLICK || ev == BSP_BTN_LONG)) {
+        handle_nav_key(btn);
         return;
     }
+    if (btn != BSP_BTN_OK) return;
     focus_state_t st = s_app.model.state;
     if (st == FOCUS_STATE_HOME) {
-        if (ev != BSP_BTN_CLICK) return;
-        if (btn == BSP_BTN_UP) start_focus(true);
-        else if (btn == BSP_BTN_DOWN) start_focus(false);
-        else if (btn == BSP_BTN_OK) start_focus(true);      // OK=默认开始工作
+        // 焦点卡:OK 开始对应会话(额度页焦点不会出现在本页)。
+        if (ev == BSP_BTN_CLICK) start_focus(s_app.focus_sel == 1);
     } else if (st == FOCUS_STATE_WORK_RUNNING ||
                st == FOCUS_STATE_REST_RUNNING) {
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+        if (ev == BSP_BTN_LONG) {
             focus_model_abort(&s_app.model);                // 放弃:不入库
             s_app.session_start_wall = 0;
-            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count,
+                              s_app.focus_sel == 1);
         }
     } else if (st == FOCUS_STATE_CELEBRATE) {
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+        if (ev == BSP_BTN_LONG || ev == BSP_BTN_CLICK) {
+            bool start_rest = ev == BSP_BTN_CLICK;
             if (focus_model_skip_celebrate(&s_app.model)) {
-                app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+                if (start_rest) start_focus(false);
+                else app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count,
+                                       s_app.focus_sel == 1);
             }
-        } else if (ev == BSP_BTN_CLICK) {
-            if (focus_model_skip_celebrate(&s_app.model)) start_focus(false);
         }
     }
 }
@@ -589,18 +614,21 @@ static void app_tick(lv_timer_t *timer) {
         record_session(FOCUS_TYPE_WORK, s_app.session_start_wall);
         app_audio_play_chime();
         if (s_app.page == PAGE_FOCUS) {
-            app_ui_show_focus(APP_UI_FOCUS_DONE, s_app.focus.count);
+            app_ui_show_focus(APP_UI_FOCUS_DONE, s_app.focus.count,
+                              s_app.focus_sel == 1);
         }
     } else if (fev == FOCUS_EVENT_REST_DONE) {
         record_session(FOCUS_TYPE_REST, s_app.session_start_wall);
         s_app.session_start_wall = 0;
         if (s_app.page == PAGE_FOCUS) {
-            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count,
+                              s_app.focus_sel == 1);
             app_ui_toast("休息完毕");
         }
     } else if (fev == FOCUS_EVENT_CELEBRATE_DONE) {
         if (s_app.page == PAGE_FOCUS) {
-            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count,
+                              s_app.focus_sel == 1);
         }
     }
     if (s_app.page == PAGE_FOCUS &&
