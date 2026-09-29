@@ -28,6 +28,11 @@ run_static_checks() {
         tests/test_ui_pixel_math.c main/ui_pixel_math.c \
         -o "${test_dir}/test_ui_pixel_math"
     "${test_dir}/test_ui_pixel_math"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain -Itests/cjson \
+        tests/test_quota_model.c main/quota_model.c main/app_clock.c \
+        tests/cjson/cJSON.c \
+        -o "${test_dir}/test_quota_model"
+    "${test_dir}/test_quota_model"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_demo_navigation.c main/demo_navigation.c \
         -o "${test_dir}/test_demo_navigation"

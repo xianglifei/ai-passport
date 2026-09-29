@@ -22,23 +22,25 @@ CONFIG_LV_COLOR_DEPTH_16=y
 # 20 ms display refresh period targets up to 50 FPS when rendering and SPI
 # transfer complete within the same budget.
 CONFIG_LV_DEF_REFR_PERIOD=20
+# 仪表盘用到的内建字号:14/20 作为中文字库的符号 fallback,48 为剩余额度大数字。
 CONFIG_LV_FONT_MONTSERRAT_14=y
 CONFIG_LV_FONT_MONTSERRAT_20=y
+CONFIG_LV_FONT_MONTSERRAT_48=y
 # LVGL 内置 malloc 池大小(KB)。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
-# 本 demo UI 简单,24KB 足够;若自建复杂界面出现绘制卡死/看门狗,调大此值。
-CONFIG_LV_MEM_SIZE_KILOBYTES=24
+# 仪表盘约 30 个对象,48KB 足够;省下的留给系统堆供 TLS 握手使用。
+CONFIG_LV_MEM_SIZE_KILOBYTES=48
 
 # --- 系统 ---
 CONFIG_FREERTOS_HZ=1000
 
-# --- Bluetooth LE / NimBLE ---
-# ESP32-C3 仅支持 BLE；示例只启用单连接 peripheral 所需的最小 host 配置。
-CONFIG_BT_ENABLED=y
-CONFIG_BT_NIMBLE_ENABLED=y
-CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
-CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=y
-CONFIG_BT_NIMBLE_ROLE_BROADCASTER=y
-CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
-CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
-CONFIG_BT_NIMBLE_HOST_BASED_PRIVACY=n
-CONFIG_BT_NIMBLE_NVS_PERSIST=n
+# --- Wi-Fi 常驻 + SNTP 对时 ---
+# SNTP 双服务器(阿里云 + 国际池);凭据保存在应用自己的 NVS 命名空间。
+CONFIG_LWIP_SNTP_MAX_SERVERS=2
+CONFIG_ESP_WIFI_NVS_ENABLED=y
+
+# --- HTTPS(拉取智谱限额接口)---
+# mbedTLS 证书包内置 Mozilla 根证书集,bigmodel.cn(TrustAsia→DigiCert)可正常校验。
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# 本应用不使用蓝牙(基线 demo 的 NimBLE 段已移除;ESP-IDF 默认 CONFIG_BT_ENABLED=n)。
