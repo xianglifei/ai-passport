@@ -29,8 +29,8 @@ static const char *TAG = "app_ui";
 // 与 assets/fonts/gen_app_fonts.sh 的字符清单保持一致;开机自检逐字核对。
 static const char APP_GLYPH_SET[] =
     "额度小时周限额刷新连接未配置更新下次失败重试长按返回热点手机浏览器"
-    "打开正在联网等待稍可设置入启址络错误效法解超长接口拒绝"
-    "一二三四五六日响应析客户端初始失败";
+    "打开正在联网等待稍可设置时入启址络错误效法解超长接口拒绝"
+    "一二三四五六日响应析客户端初始失败番茄工分休作完于弃同条翻页毕";
 
 LV_FONT_DECLARE(app_font_16);
 LV_FONT_DECLARE(app_font_20);
@@ -44,6 +44,7 @@ static lv_obj_t *s_battery;             // 顶层电量标签
 
 // ---- 仪表盘控件(仅当前页有效;切页统一在 new_screen 里清空) ----
 static lv_obj_t *s_net_dot;
+static lv_obj_t *s_focus_dot;           // 额度页番茄指示点(工作中红/休息中青)
 typedef struct {
     lv_obj_t *panel;
     lv_obj_t *reset_time;               // "14:52 刷新"
@@ -63,6 +64,12 @@ static lv_obj_t *s_setup_l2;
 static lv_obj_t *s_setup_l3;
 static lv_obj_t *s_toast;
 static uint32_t s_toast_until;          // lv_tick 毫秒;0 = 无提示
+
+// ---- 番茄页控件 ----
+static lv_obj_t *s_focus_arc;           // 倒计时圆环(IDLE/DONE 为 NULL)
+static lv_obj_t *s_focus_time;          // mm:ss 大数字
+static lv_obj_t *s_focus_finish;        // "完成于 HH:MM"
+static lv_obj_t *s_focus_pend;          // "待同步 N 条"
 
 // ---------------------------------------------------------------------------
 // 小工具
@@ -113,12 +120,19 @@ static void new_screen(void) {
     lv_obj_clear_flag(s_scr, LV_OBJ_FLAG_SCROLLABLE);
     s_toast = NULL;
     s_net_dot = s_footer = s_nokey_hint = NULL;
+    s_focus_arc = s_focus_time = s_focus_finish = s_focus_pend = NULL;
     memset(s_card, 0, sizeof(s_card));
     s_setup_l1 = s_setup_l2 = s_setup_l3 = NULL;
 }
 
 static void load_screen(void) {
     lv_screen_load(s_scr);
+}
+
+#define SCALE_BASE 256                  // LVGL transform_scale 的 100%
+
+static void focus_anim_scale_cb(void *var, int32_t v) {
+    lv_obj_set_style_transform_scale((lv_obj_t *)var, v, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +262,11 @@ void app_ui_show_dash(bool has_key) {
     s_net_dot = make_circle(s_scr, 10, lv_color_hex(COL_SUB));
     lv_obj_align(s_net_dot, LV_ALIGN_TOP_RIGHT, -64, 14);
 
+    // 番茄后台计时指示点:红=工作中,青=休息中,空闲隐藏。
+    s_focus_dot = make_circle(s_scr, 8, lv_color_hex(COL_WORK));
+    lv_obj_align(s_focus_dot, LV_ALIGN_TOP_RIGHT, -80, 15);
+    lv_obj_add_flag(s_focus_dot, LV_OBJ_FLAG_HIDDEN);
+
     if (s_dash_nokey) {
         s_nokey_hint = make_label(s_scr, "未配置 API Key", &app_font_20,
                                   lv_color_hex(COL_TEXT));
@@ -309,6 +328,138 @@ void app_ui_dash_tick(uint64_t wall_sec) {
     if (!s_data.valid) return;
     card_update_times(0, &s_data.win5h, wall_sec);
     card_update_times(1, &s_data.week, wall_sec);
+}
+
+void app_ui_dash_set_focus_dot(bool running, bool work) {
+    if (!s_focus_dot) return;
+    if (!running) {
+        lv_obj_add_flag(s_focus_dot, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_set_style_bg_color(s_focus_dot,
+                              lv_color_hex(work ? COL_WORK : COL_REST), 0);
+    lv_obj_clear_flag(s_focus_dot, LV_OBJ_FLAG_HIDDEN);
+}
+
+// ---------------------------------------------------------------------------
+// 番茄页:空闲=两个直接动作入口;倒计时=圆环+剩余;DONE=完成横幅
+// ---------------------------------------------------------------------------
+void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending) {
+    new_screen();
+
+    if (mode == APP_UI_FOCUS_IDLE) {
+        lv_obj_t *title = make_label(s_scr, "番茄钟", &app_font_20,
+                                     lv_color_hex(COL_TEXT));
+        lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 46);
+
+        lv_obj_t *l1 = make_label(s_scr, "开始工作 25 分钟", &app_font_16,
+                                  lv_color_hex(COL_TEXT));
+        lv_obj_align(l1, LV_ALIGN_CENTER, 0, -34);
+        lv_obj_t *d1 = make_circle(s_scr, 10, lv_color_hex(COL_WORK));
+        lv_obj_align_to(d1, l1, LV_ALIGN_OUT_LEFT_MID, -14, 0);
+
+        lv_obj_t *l2 = make_label(s_scr, "开始休息 10 分钟", &app_font_16,
+                                  lv_color_hex(COL_TEXT));
+        lv_obj_align(l2, LV_ALIGN_CENTER, 0, 6);
+        lv_obj_t *d2 = make_circle(s_scr, 10, lv_color_hex(COL_REST));
+        lv_obj_align_to(d2, l2, LV_ALIGN_OUT_LEFT_MID, -14, 0);
+
+        s_focus_pend = make_label(s_scr, "", &app_font_16,
+                                  lv_color_hex(COL_GOLD));
+        lv_obj_align(s_focus_pend, LV_ALIGN_BOTTOM_MID, 0, -34);
+        app_ui_focus_set_pending(pending);
+    } else if (mode == APP_UI_FOCUS_DONE) {
+        lv_obj_t *ring = make_circle(s_scr, 108, lv_color_hex(COL_GOLD));
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(ring, 3, 0);
+        lv_obj_set_style_border_color(ring, lv_color_hex(COL_GOLD), 0);
+        lv_obj_align(ring, LV_ALIGN_CENTER, 0, -46);
+        lv_anim_t anim;
+        lv_anim_init(&anim);
+        lv_anim_set_var(&anim, ring);
+        lv_anim_set_exec_cb(&anim, focus_anim_scale_cb);
+        lv_anim_set_values(&anim, SCALE_BASE, SCALE_BASE + 30);
+        lv_anim_set_duration(&anim, 600);
+        lv_anim_set_playback_duration(&anim, 600);
+        lv_anim_set_repeat_count(&anim, LV_ANIM_REPEAT_INFINITE);
+        lv_anim_start(&anim);
+
+        lv_obj_t *done = make_label(s_scr, "工作完成！", &app_font_20,
+                                    lv_color_hex(COL_GOLD));
+        lv_obj_align(done, LV_ALIGN_CENTER, 0, 42);
+        lv_obj_t *next = make_label(s_scr, "按 ↓ 开始休息", &app_font_20,
+                                    lv_color_hex(COL_TEXT));
+        lv_obj_align(next, LV_ALIGN_CENTER, 0, 78);
+    } else {
+        bool work = mode == APP_UI_FOCUS_WORK;
+        uint32_t accent = work ? COL_WORK : COL_REST;
+
+        lv_obj_t *pill = make_panel(s_scr, 70, 20, 100, 34, lv_color_hex(accent));
+        lv_obj_set_style_radius(pill, 17, 0);
+        lv_obj_t *pill_label = make_label(pill, work ? "工作中" : "休息中",
+                                          &app_font_16, lv_color_hex(COL_WHITE));
+        lv_obj_center(pill_label);
+
+        s_focus_arc = lv_arc_create(s_scr);
+        lv_obj_set_size(s_focus_arc, 168, 168);
+        lv_obj_align(s_focus_arc, LV_ALIGN_CENTER, 0, -8);
+        lv_arc_set_rotation(s_focus_arc, 0);
+        lv_arc_set_bg_angles(s_focus_arc, 0, 360);
+        lv_arc_set_range(s_focus_arc, 0, 100);
+        lv_arc_set_value(s_focus_arc, 100);
+        lv_obj_remove_style(s_focus_arc, NULL, LV_PART_KNOB);
+        lv_obj_clear_flag(s_focus_arc, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_arc_color(s_focus_arc, lv_color_hex(COL_EMPTY), LV_PART_MAIN);
+        lv_obj_set_style_arc_width(s_focus_arc, 10, LV_PART_MAIN);
+        lv_obj_set_style_arc_color(s_focus_arc, lv_color_hex(accent), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_width(s_focus_arc, 10, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_rounded(s_focus_arc, true, LV_PART_MAIN);
+        lv_obj_set_style_arc_rounded(s_focus_arc, true, LV_PART_INDICATOR);
+
+        s_focus_time = make_label(s_scr, "00:00", &lv_font_montserrat_48,
+                                  lv_color_hex(COL_TEXT));
+        lv_obj_align(s_focus_time, LV_ALIGN_CENTER, 0, -8);
+
+        s_focus_finish = make_label(s_scr, "", &app_font_16, lv_color_hex(COL_SUB));
+        lv_obj_align(s_focus_finish, LV_ALIGN_CENTER, 0, 78);
+    }
+
+    lv_obj_t *hint = make_label(s_scr, "长按 ↑↓ 翻页", &s_font_16_sym,
+                                lv_color_hex(COL_SUB));
+    lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -12);
+
+    load_screen();
+}
+
+void app_ui_focus_update(uint32_t remain_sec, uint32_t total_sec,
+                         int32_t finish_min) {
+    if (!s_focus_time) return;
+    lv_label_set_text_fmt(s_focus_time, "%02u:%02u",
+                          (unsigned)(remain_sec / 60U),
+                          (unsigned)(remain_sec % 60U));
+    if (s_focus_arc) {
+        uint32_t pct = total_sec ? remain_sec * 100U / total_sec : 0;
+        if (pct > 100U) pct = 100U;
+        lv_arc_set_value(s_focus_arc, (int32_t)pct);
+    }
+    if (s_focus_finish) {
+        if (finish_min >= 0) {
+            lv_label_set_text_fmt(s_focus_finish, "完成于 %02u:%02u",
+                                  (unsigned)finish_min / 60U,
+                                  (unsigned)finish_min % 60U);
+        } else {
+            lv_label_set_text(s_focus_finish, "");
+        }
+    }
+}
+
+void app_ui_focus_set_pending(uint16_t pending) {
+    if (!s_focus_pend) return;
+    if (pending == 0) {
+        lv_label_set_text(s_focus_pend, "");
+        return;
+    }
+    lv_label_set_text_fmt(s_focus_pend, "待同步 %u 条", (unsigned)pending);
 }
 
 // ---------------------------------------------------------------------------

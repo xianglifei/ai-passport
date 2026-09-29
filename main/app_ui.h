@@ -40,6 +40,25 @@ void app_ui_show_setup(const char *line1, const char *line2, const char *line3,
                        const char *hint);
 void app_ui_setup_update(const char *line1, const char *line2, const char *line3);
 
+// 番茄页形态(对应 focus_model 状态;DONE=工作完成横幅)。
+typedef enum {
+    APP_UI_FOCUS_IDLE = 0,
+    APP_UI_FOCUS_WORK,
+    APP_UI_FOCUS_REST,
+    APP_UI_FOCUS_DONE,
+} app_ui_focus_mode_t;
+
+// 番茄页:mode 决定形态(空闲=两个直接动作入口;WORK/REST=倒计时圆环;
+// DONE=完成横幅)。pending 为待上报会话数(空闲页展示,0 不显示)。
+void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending);
+// 倒计时中每 250ms 调用:剩余 mm:ss/圆环进度/"完成于 HH:MM"(finish_min<0 不显示)。
+void app_ui_focus_update(uint32_t remain_sec, uint32_t total_sec, int32_t finish_min);
+// 空闲页待上报条数变化时调用。
+void app_ui_focus_set_pending(uint16_t pending);
+
+// 额度页标题行番茄指示点:running=false 隐藏;work=true 红(工作中)青(休息中)。
+void app_ui_dash_set_focus_dot(bool running, bool work);
+
 // 电量(0..100),-1 不可用。挂在顶层图层,任何页面右上角常显。
 void app_ui_set_battery(int soc);
 

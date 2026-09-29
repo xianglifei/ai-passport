@@ -2,6 +2,7 @@
 // 命名空间沿用 "focus_app"(与番茄专注分支同源,Key 不同不冲突)。
 #include "app_store.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_err.h"
@@ -14,6 +15,8 @@ static const char *NS = "focus_app";
 static const char *KEY_CLOCK = "clock";
 static const char *KEY_API = "glm_key";
 static const char *KEY_QUOTA = "glm_quota";
+static const char *KEY_SYNC_TOKEN = "sync_token";
+static const char *KEY_FOCUS_BUF = "focus_buf";
 
 bool app_store_init(void) {
     esp_err_t err = nvs_flash_init();
@@ -111,6 +114,72 @@ bool app_store_load_quota(quota_data_t *out, uint64_t *saved_wall_sec) {
     memcpy(out, buf, sizeof(*out));
     memcpy(saved_wall_sec, buf + sizeof(*out), 8);
     return out->valid;
+}
+
+bool app_store_load_sync_token(char *buf, size_t len) {
+    if (!buf || len < 2) return false;
+    nvs_handle_t handle;
+    if (nvs_open(NS, NVS_READONLY, &handle) != ESP_OK) return false;
+    size_t size = len;
+    esp_err_t err = nvs_get_str(handle, KEY_SYNC_TOKEN, buf, &size);
+    nvs_close(handle);
+    return err == ESP_OK && buf[0] != 0;
+}
+
+int app_store_save_sync_token(const char *token) {
+    if (!token || !token[0]) return ESP_ERR_INVALID_ARG;
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return (int)err;
+    err = nvs_set_str(handle, KEY_SYNC_TOKEN, token);
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "同步 token 写入失败: %s", esp_err_to_name(err));
+    }
+    return (int)err;
+}
+
+bool app_store_load_focus_buf(focus_store_t *s) {
+    focus_store_init(s);
+    // 4.8KB blob 不放栈上(主任务栈仅 3.5KB),堆上临时分配。
+    uint8_t *buf = malloc(FOCUS_STORE_BLOB_SIZE);
+    if (!buf) {
+        ESP_LOGW(TAG, "会话缓冲载入内存不足");
+        return false;
+    }
+    nvs_handle_t handle;
+    if (nvs_open(NS, NVS_READONLY, &handle) != ESP_OK) {
+        free(buf);
+        return false;
+    }
+    size_t len = FOCUS_STORE_BLOB_SIZE;
+    esp_err_t err = nvs_get_blob(handle, KEY_FOCUS_BUF, buf, &len);
+    nvs_close(handle);
+    if (err == ESP_OK) focus_store_deserialize(s, buf, len);
+    free(buf);
+    return err == ESP_OK && s->count > 0;
+}
+
+int app_store_save_focus_buf(const focus_store_t *s) {
+    uint8_t *buf = malloc(FOCUS_STORE_BLOB_SIZE);
+    if (!buf) {
+        ESP_LOGW(TAG, "会话缓冲保存内存不足");
+        return (int)ESP_ERR_NO_MEM;
+    }
+    size_t len = focus_store_serialize(s, buf, FOCUS_STORE_BLOB_SIZE);
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NS, NVS_READWRITE, &handle);
+    if (err == ESP_OK && len > 0) {
+        err = nvs_set_blob(handle, KEY_FOCUS_BUF, buf, len);
+        if (err == ESP_OK) err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    free(buf);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "会话缓冲写入失败: %s", esp_err_to_name(err));
+    }
+    return (int)err;
 }
 
 int app_store_save_quota(const quota_data_t *d, uint64_t wall_sec) {

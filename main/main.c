@@ -1,19 +1,24 @@
-// main/main.c —— GLM 额度:智谱 Coding Plan 配额监视(5 小时窗口 + 周限额)。
+// main/main.c —— 双应用:GLM 额度监视 + 番茄钟(简化版),上下键翻页。
 //
-// 单屏仪表盘:两张限额卡(剩余/比例条/重置时刻/倒计时)+ 页脚轮询状态 +
-// 标题行套餐徽章与网络状态点。每 5 分钟自动拉取一次,连上 Wi-Fi 与对时成功
-// 后立即拉取;拉取失败 60 秒后重试,Wi-Fi 掉线自动重连(30 秒周期)。
+// 额度页(默认):两张限额卡(已用百分比/比例条/重置时刻)+ 页脚轮询状态 +
+// 标题行状态点(网络 + 番茄后台计时)。每 5 分钟拉取,失败 60 秒重试,
+// 断线自动重连(30 秒周期),在线常驻。
+// 番茄页:↑ 直接开始工作 25 分,↓ 直接开始休息 10 分,OK 单击=开始工作;
+// 倒计时中长按 OK 放弃(不入库);长按 ↑/↓ 翻页,计时后台继续。
+// 完成的会话记录真 UTC 毫秒时间戳,NVS 暂存,在线批量上报 Let's farm
+// (/sync,幂等去重),上报成功才清本地;放弃的会话不记录。
 //
-// 按键语义:
-//   仪表盘  OK 单击 = 立即更新;OK 长按 = 配网设置(热点 + 表单:Wi-Fi/Key)
+// 按键语义(上下键优先服务当前页;额度页无页内用途,单击即翻页):
+//   额度页  ↑/↓ 单击或长按 = 番茄页;OK 单击 = 立即更新;OK 长按 = 配网
+//   番茄页  ↑ = 工作 / ↓ = 休息 / OK = 工作(空闲);长按 OK = 放弃(倒计时);
+//           ↑/↓/OK 单击 = 开始休息(完成横幅);长按 ↑/↓ = 翻页(全状态)
 //   配网页  OK = 返回;长按 DOWN = 重开热点
 //
 // 线程模型:按键回调只入队;input 任务持 bsp_lvgl_lock 处理输入;
-// app_tick 跑在 LVGL 任务内(免锁);Wi-Fi/HTTPS/NVS 在 work 任务
-// (8KB 栈,TLS 握手开销大)。拉取结果经标志位交给 app_tick 上屏。
-//
-// 时间:开机连 Wi-Fi + SNTP(UTC+8 折算本地);配额的重置时刻是绝对时间戳,
-// 没有准确时钟就显示占位,不做手动对时(本应用数据本来就依赖网络)。
+// app_tick 跑在 LVGL 任务内(免锁);Wi-Fi/HTTPS/NVS/上报在 work 任务
+// (8KB 栈)。配额拉取与番茄上报各自带标志位交付结果。
+#include "app_audio.h"
+#include "app_clock.h"
 #include "app_store.h"
 #include "app_ui.h"
 #include "app_wifi.h"
@@ -23,6 +28,9 @@
 #include "bsp_pins.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "focus_model.h"
+#include "focus_store.h"
+#include "focus_sync.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -32,12 +40,15 @@
 #include <stdio.h>
 #include <string.h>
 
-// 本机私有默认 Key(可选):main/credentials.h 被 .gitignore 排除,不存在时为空。
+// 本机私有凭据(可选):main/credentials.h 被 .gitignore 排除,不存在时为空。
 #if __has_include("credentials.h")
 #include "credentials.h"
 #endif
 #ifndef GLM_API_KEY_DEFAULT
 #define GLM_API_KEY_DEFAULT ""
+#endif
+#ifndef GLM_SYNC_TOKEN_DEFAULT
+#define GLM_SYNC_TOKEN_DEFAULT ""
 #endif
 
 static const char *TAG = "quota_app";
@@ -45,17 +56,21 @@ static const char *TAG = "quota_app";
 #define TICK_PERIOD_MS 250
 #define CLOCK_SAVE_INTERVAL_MS 30000
 #define BATTERY_INTERVAL_MS 30000
-#define POLL_INTERVAL_MS (5U * 60U * 1000U)   // 正常轮询周期
+#define POLL_INTERVAL_MS (5U * 60U * 1000U)   // 配额正常轮询周期
 #define FETCH_RETRY_MS (60U * 1000U)          // 拉取失败后的重试间隔
 #define WIFI_RETRY_MS (30U * 1000U)           // Wi-Fi 彻底失败后的重连周期
+#define SYNC_RETRY_MS (5U * 60U * 1000U)      // 会话上报失败后的重试间隔
+#define FOCUS_SNAP_MAX 100                    // 单次上报批量(服务端上限 2000)
 #define INPUT_QUEUE_DEPTH 8
 #define WORK_QUEUE_DEPTH 8
 #define KEY_MAX_LEN 96
+#define TOKEN_MAX_LEN 160
 // 设备无联网前不设本地时间;SNTP 对时结果按 UTC+8 折算(与 app_wifi 约定一致)。
 #define APP_TZ_OFFSET_SEC (8 * 3600)
 
 typedef enum {
     PAGE_DASH = 0,
+    PAGE_FOCUS,
     PAGE_SETUP,
 } app_page_t;
 
@@ -64,10 +79,12 @@ typedef enum {
     WORK_WIFI_PROVISION,    // 开配网热点
     WORK_WIFI_STOP,         // 停止 Wi-Fi/SNTP
     WORK_FETCH,             // 拉取一次配额
+    WORK_SYNC_UPLOAD,       // 上报一批番茄会话(快照在 s_app.focus_snap)
 } work_type_t;
 
 typedef struct {
     work_type_t type;
+    uint16_t a;             // WORK_SYNC_UPLOAD:快照条数
 } work_item_t;
 
 typedef struct {
@@ -84,11 +101,23 @@ typedef struct {
     QueueHandle_t work_queue;
 
     char api_key[KEY_MAX_LEN];
+    char sync_token[TOKEN_MAX_LEN];
 
-    // 拉取调度与结果(worker 写结果,app_tick 消费;单写单读,标志位交付)
+    // 番茄:状态机 + 会话缓冲 + 上传快照(worker 只见快照,不碰主缓冲)
+    focus_model_t model;
+    focus_store_t focus;
+    uint64_t session_start_wall;    // 本次会话起始本地墙钟秒;0=未在计时
+    focus_rec_t focus_snap[FOCUS_SNAP_MAX];
+    uint16_t focus_snap_n;
+    bool sync_inflight;
+    bool sync_ready;                // worker 写完一批上报结果
+    focus_sync_result_t sync_result;
+    uint64_t sync_retry_at_ms;      // 上报失败后下次重试;0=未排期
+
+    // 配额拉取调度与结果(worker 写结果,app_tick 消费;标志位交付)
     bool fetch_inflight;
     uint64_t next_fetch_ms;     // 单调毫秒;0 = 尚未排期
-    bool result_ready;          // worker 写完一批结果
+    bool result_ready;
     bool result_ok;
     quota_data_t result;
     bool result_live;           // result 是实时数据(否则为开机快照,显示灰色)
@@ -122,6 +151,25 @@ static void enqueue_work(work_type_t type) {
 // 页面
 // ---------------------------------------------------------------------------
 static app_ui_net_t map_net(app_wifi_state_t st);
+static void request_sync_upload(void);
+
+// 番茄状态机 → UI 形态
+static app_ui_focus_mode_t focus_ui_mode(void) {
+    switch (s_app.model.state) {
+    case FOCUS_STATE_WORK_RUNNING: return APP_UI_FOCUS_WORK;
+    case FOCUS_STATE_REST_RUNNING: return APP_UI_FOCUS_REST;
+    case FOCUS_STATE_CELEBRATE: return APP_UI_FOCUS_DONE;
+    default: return APP_UI_FOCUS_IDLE;
+    }
+}
+
+// 额度页标题行的番茄后台计时指示点(只在额度页可见)。
+static void update_focus_dot(void) {
+    bool running = s_app.model.state == FOCUS_STATE_WORK_RUNNING ||
+                   s_app.model.state == FOCUS_STATE_REST_RUNNING;
+    app_ui_dash_set_focus_dot(running,
+                              s_app.model.state == FOCUS_STATE_WORK_RUNNING);
+}
 
 static void go_dash(void) {
     // Key 可能在配网页刚被写入,每次回仪表盘前重读(单键 NVS 读,开销微小)。
@@ -134,8 +182,25 @@ static void go_dash(void) {
         app_ui_dash_set_quota(&s_app.result, !s_app.result_live);
     }
     app_ui_dash_set_net(map_net(app_wifi_state()));
+    update_focus_dot();
     // 配网页可能刚换了 Key/刚连上网:回仪表盘即安排一次拉取(在线才会真正发出)。
     if (has_key) s_app.next_fetch_ms = now_ms();
+}
+
+static void go_focus(void) {
+    s_app.page = PAGE_FOCUS;
+    app_ui_show_focus(focus_ui_mode(), s_app.focus.count);
+}
+
+// 开始一个番茄会话;时钟未同步也能计时,只是该会话不入库。
+static void start_focus(bool work) {
+    bool ok = work ? focus_model_start_work(&s_app.model, now_ms())
+                   : focus_model_start_rest(&s_app.model, now_ms());
+    if (!ok) return;
+    s_app.session_start_wall = wall_sec();
+    s_app.page = PAGE_FOCUS;
+    app_ui_show_focus(work ? APP_UI_FOCUS_WORK : APP_UI_FOCUS_REST,
+                      s_app.focus.count);
 }
 
 static void enter_setup(void) {
@@ -204,7 +269,7 @@ static void footer_refresh(app_wifi_state_t st) {
     app_ui_dash_set_footer(text, false);
 }
 
-// 请求一次拉取(仪表盘 OK / 调度到期共用);不在线时给出提示。
+// 请求一次配额拉取(仪表盘 OK / 调度到期共用);不在线时给出提示。
 static void request_fetch(bool manual) {
     if (!s_app.api_key[0]) {
         if (manual) app_ui_toast("未配置 API Key");
@@ -243,13 +308,103 @@ static void consume_fetch_result(void) {
 }
 
 // ---------------------------------------------------------------------------
+// 番茄:会话入库与上报
+// ---------------------------------------------------------------------------
+// 完成的会话入库(只记录完整完成的;放弃不入库)。时间戳折算为真 UTC 毫秒,
+// 与网页端同格式——设备墙钟是 UTC+8 口径,入库前减回。
+static void record_session(uint8_t type, uint64_t start_wall) {
+    uint64_t end_wall = wall_sec();
+    if (!start_wall || !end_wall || end_wall <= start_wall) {
+        ESP_LOGW(TAG, "时钟未同步,本次会话不入库");
+        return;
+    }
+    uint64_t utc_start = (start_wall - APP_TZ_OFFSET_SEC) * 1000ULL;
+    uint64_t utc_end = (end_wall - APP_TZ_OFFSET_SEC) * 1000ULL;
+    if (!focus_store_add(&s_app.focus, type, utc_start, utc_end)) {
+        ESP_LOGW(TAG, "会话缓冲已满(%u 条),本条丢弃",
+                 (unsigned)FOCUS_STORE_CAP);
+        return;
+    }
+    app_store_save_focus_buf(&s_app.focus);
+    ESP_LOGI(TAG, "会话入库: type=%u 时长 %llu 秒, 待传 %u 条", type,
+             (unsigned long long)(end_wall - start_wall),
+             (unsigned)s_app.focus.count);
+    request_sync_upload();
+}
+
+// 快照最旧的至多 FOCUS_SNAP_MAX 条交 worker;期间新增的留在缓冲下一批传。
+// 只在 LVGL 任务内调用(单写者);worker 只读快照,不碰主缓冲。
+static void request_sync_upload(void) {
+    if (s_app.sync_inflight || s_app.focus.count == 0) return;
+    s_app.focus_snap_n = s_app.focus.count < FOCUS_SNAP_MAX
+                             ? s_app.focus.count
+                             : FOCUS_SNAP_MAX;
+    memcpy(s_app.focus_snap, s_app.focus.recs,
+           (size_t)s_app.focus_snap_n * sizeof(focus_rec_t));
+    s_app.sync_inflight = true;
+    work_item_t item = { .type = WORK_SYNC_UPLOAD, .a = s_app.focus_snap_n };
+    xQueueSend(s_app.work_queue, &item, 0);
+}
+
+// worker 的上报结果消费(在 LVGL 任务内调用);成功才清快照,失败择时重试。
+static void consume_sync_result(void) {
+    if (!s_app.sync_ready) return;
+    s_app.sync_ready = false;
+    s_app.sync_inflight = false;
+    if (s_app.sync_result == FOCUS_SYNC_OK) {
+        focus_store_drop_oldest(&s_app.focus, s_app.focus_snap_n);
+        app_store_save_focus_buf(&s_app.focus);
+        ESP_LOGI(TAG, "会话上报成功,剩余待传 %u 条", (unsigned)s_app.focus.count);
+    } else {
+        s_app.sync_retry_at_ms = now_ms() + SYNC_RETRY_MS;
+        ESP_LOGW(TAG, "会话上报失败(%d),%u 条待重试",
+                 (int)s_app.sync_result, (unsigned)s_app.focus.count);
+    }
+    if (s_app.page == PAGE_FOCUS) app_ui_focus_set_pending(s_app.focus.count);
+}
+
+// ---------------------------------------------------------------------------
 // 输入
 // ---------------------------------------------------------------------------
 static void handle_dash_input(bsp_btn_t btn, bsp_btn_ev_t ev) {
     if (ev != BSP_BTN_CLICK && ev != BSP_BTN_LONG) return;
+    if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
+        go_focus();                             // 额度页无页内用途:上下键即翻页
+        return;
+    }
     if (btn == BSP_BTN_OK) {
         if (ev == BSP_BTN_CLICK) request_fetch(true);
         else enter_setup();
+    }
+}
+
+static void handle_focus_input(bsp_btn_t btn, bsp_btn_ev_t ev) {
+    // 全状态通用:长按 ↑/↓ 翻回额度页,计时后台继续。
+    if (ev == BSP_BTN_LONG && (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN)) {
+        go_dash();
+        return;
+    }
+    focus_state_t st = s_app.model.state;
+    if (st == FOCUS_STATE_HOME) {
+        if (ev != BSP_BTN_CLICK) return;
+        if (btn == BSP_BTN_UP) start_focus(true);
+        else if (btn == BSP_BTN_DOWN) start_focus(false);
+        else if (btn == BSP_BTN_OK) start_focus(true);      // OK=默认开始工作
+    } else if (st == FOCUS_STATE_WORK_RUNNING ||
+               st == FOCUS_STATE_REST_RUNNING) {
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            focus_model_abort(&s_app.model);                // 放弃:不入库
+            s_app.session_start_wall = 0;
+            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+        }
+    } else if (st == FOCUS_STATE_CELEBRATE) {
+        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {
+            if (focus_model_skip_celebrate(&s_app.model)) {
+                app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+            }
+        } else if (ev == BSP_BTN_CLICK) {
+            if (focus_model_skip_celebrate(&s_app.model)) start_focus(false);
+        }
     }
 }
 
@@ -272,6 +427,7 @@ static void handle_setup_input(bsp_btn_t btn, bsp_btn_ev_t ev) {
 static void handle_input(bsp_btn_t btn, bsp_btn_ev_t ev) {
     switch (s_app.page) {
     case PAGE_DASH: handle_dash_input(btn, ev); break;
+    case PAGE_FOCUS: handle_focus_input(btn, ev); break;
     case PAGE_SETUP: handle_setup_input(btn, ev); break;
     }
 }
@@ -298,7 +454,7 @@ static void input_task(void *arg) {
 }
 
 // ---------------------------------------------------------------------------
-// 工作任务:Wi-Fi 状态机与 HTTPS 拉取都在这里(阻塞 IO 不碰 LVGL)
+// 工作任务:Wi-Fi 状态机与 HTTPS(配额/上报)都在这里(阻塞 IO 不碰 LVGL)
 // ---------------------------------------------------------------------------
 static void worker_task(void *arg) {
     (void)arg;
@@ -327,6 +483,11 @@ static void worker_task(void *arg) {
             s_app.result_ready = true;      // app_tick 消费后清 inflight
             break;
         }
+        case WORK_SYNC_UPLOAD:
+            s_app.sync_result = focus_sync_upload(
+                s_app.sync_token, s_app.focus_snap, item.a);
+            s_app.sync_ready = true;
+            break;
         }
     }
 }
@@ -404,6 +565,10 @@ static void app_tick(lv_timer_t *timer) {
         if (st == APP_WIFI_FAILED) {
             s_app.wifi_retry_at_ms = now + WIFI_RETRY_MS;
         }
+        // 首次上线顺手把攒着的会话传上去。
+        if (st == APP_WIFI_CONNECTED && s_app.focus.count) {
+            request_sync_upload();
+        }
     }
     if (st == APP_WIFI_FAILED && s_app.wifi_retry_at_ms &&
         now >= s_app.wifi_retry_at_ms) {
@@ -411,14 +576,53 @@ static void app_tick(lv_timer_t *timer) {
         enqueue_work(WORK_WIFI_STA);
     }
 
-    // ---- 拉取调度 ----
+    // ---- 配额拉取调度 ----
     consume_fetch_result();
     if (!s_app.fetch_inflight && s_app.api_key[0] && s_app.next_fetch_ms &&
         now >= s_app.next_fetch_ms && s_app.page != PAGE_SETUP) {
         request_fetch(false);
     }
 
-    // ---- 每秒:相对文案(倒计时/页脚下次倒计时) ----
+    // ---- 番茄:状态机推进 / 会话入库 / 上报调度 / 页面刷新 ----
+    focus_event_t fev = focus_model_tick(&s_app.model, now);
+    if (fev == FOCUS_EVENT_WORK_DONE) {
+        record_session(FOCUS_TYPE_WORK, s_app.session_start_wall);
+        app_audio_play_chime();
+        if (s_app.page == PAGE_FOCUS) {
+            app_ui_show_focus(APP_UI_FOCUS_DONE, s_app.focus.count);
+        }
+    } else if (fev == FOCUS_EVENT_REST_DONE) {
+        record_session(FOCUS_TYPE_REST, s_app.session_start_wall);
+        s_app.session_start_wall = 0;
+        if (s_app.page == PAGE_FOCUS) {
+            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+            app_ui_toast("休息完毕");
+        }
+    } else if (fev == FOCUS_EVENT_CELEBRATE_DONE) {
+        if (s_app.page == PAGE_FOCUS) {
+            app_ui_show_focus(APP_UI_FOCUS_IDLE, s_app.focus.count);
+        }
+    }
+    if (s_app.page == PAGE_FOCUS &&
+        (s_app.model.state == FOCUS_STATE_WORK_RUNNING ||
+         s_app.model.state == FOCUS_STATE_REST_RUNNING)) {
+        uint32_t remain = focus_model_remaining_sec(&s_app.model, now);
+        int32_t finish_min = -1;
+        if (s_app.boot_epoch && remain > 0) {
+            uint64_t finish_wall =
+                s_app.boot_epoch + (now + (uint64_t)remain * 1000ULL) / 1000ULL;
+            finish_min = (int32_t)app_clock_minute_of_day(finish_wall);
+        }
+        app_ui_focus_update(remain, s_app.model.duration_sec, finish_min);
+    }
+    consume_sync_result();
+    if (!s_app.sync_inflight && s_app.focus.count &&
+        s_app.sync_retry_at_ms && now >= s_app.sync_retry_at_ms) {
+        s_app.sync_retry_at_ms = 0;
+        request_sync_upload();
+    }
+
+    // ---- 每秒:相对文案(重置时刻/页脚下次倒计时/番茄指示点) ----
     if (now - s_last_sec_tick >= 1000) {
         s_last_sec_tick = now;
         if (s_app.page == PAGE_DASH && s_app.boot_epoch) {
@@ -428,6 +632,7 @@ static void app_tick(lv_timer_t *timer) {
             s_app.fetched_wall && !s_app.fetch_inflight && s_app.last_ok) {
             footer_refresh(st);
         }
+        if (s_app.page == PAGE_DASH) update_focus_dot();
     }
 
     // ---- 配网成功自动回仪表盘(保持在线,不停 Wi-Fi) ----
@@ -457,8 +662,7 @@ static void app_tick(lv_timer_t *timer) {
 // 启动
 // ---------------------------------------------------------------------------
 void app_main(void) {
-    ESP_LOGI(TAG, "GLM 额度 启动(每 %u 分钟拉取一次套餐限额)",
-             (unsigned)(POLL_INTERVAL_MS / 60000U));
+    ESP_LOGI(TAG, "双应用启动:GLM 额度 + 番茄钟(↑↓ 翻页)");
 
     memset(&s_app, 0, sizeof(s_app));
 
@@ -488,6 +692,18 @@ void app_main(void) {
         ESP_LOGI(TAG, "载入配额快照");
     }
 
+    focus_model_init(&s_app.model, 0);
+    if (app_store_load_focus_buf(&s_app.focus) && s_app.focus.count) {
+        ESP_LOGI(TAG, "载入待传会话 %u 条", (unsigned)s_app.focus.count);
+    }
+    app_store_load_sync_token(s_app.sync_token, sizeof(s_app.sync_token));
+    if (!s_app.sync_token[0] && GLM_SYNC_TOKEN_DEFAULT[0]) {
+        // 本机内置同步 token(credentials.h):一次性写入 NVS。
+        strlcpy(s_app.sync_token, GLM_SYNC_TOKEN_DEFAULT, sizeof(s_app.sync_token));
+        app_store_save_sync_token(s_app.sync_token);
+        ESP_LOGI(TAG, "写入内置同步 token(长度 %d)", (int)strlen(s_app.sync_token));
+    }
+
     // Wi-Fi 子系统先于 UI 决策初始化:开机进仪表盘还是配网页要看已存凭据。
     bool has_wifi_creds = app_wifi_init();
     ESP_LOGI(TAG, "%s Wi-Fi 凭据", has_wifi_creds ? "已存" : "无");
@@ -503,6 +719,7 @@ void app_main(void) {
     if (bsp_battery_init() != ESP_OK) {
         ESP_LOGW(TAG, "电量计不可用,右上角显示 -- ");
     }
+    app_audio_init();       // 失败不致命:音效禁用,番茄照常
 
     if (bsp_lvgl_lock(1000)) {
         app_ui_init();

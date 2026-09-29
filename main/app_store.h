@@ -3,8 +3,10 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
+#include "focus_store.h"
 #include "quota_model.h"
 
 // 初始化默认 NVS 分区;必要时擦除重试。失败时设备仍可运行(仅无持久化)。
@@ -26,3 +28,11 @@ bool app_store_has_key(void);
 // saved_wall_sec 为拉取成功时的本地墙钟秒;无记录返回 false。
 bool app_store_load_quota(quota_data_t *out, uint64_t *saved_wall_sec);
 int app_store_save_quota(const quota_data_t *d, uint64_t wall_sec);
+
+// Let's farm 同步 token(30 天过期)。无记录返回 false。
+bool app_store_load_sync_token(char *buf, size_t len);
+int app_store_save_sync_token(const char *token);
+
+// 番茄会话缓冲(见 focus_store.h;读写即整块序列化)。
+bool app_store_load_focus_buf(focus_store_t *s);
+int app_store_save_focus_buf(const focus_store_t *s);
