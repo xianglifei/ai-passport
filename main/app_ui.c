@@ -30,7 +30,7 @@ static const char *TAG = "app_ui";
 static const char APP_GLYPH_SET[] =
     "额度小时周限额刷新连接未配置更新下次失败重试长按返回热点手机浏览器"
     "打开正在联网等待稍可设置时入启址络错误效法解超长接口拒绝"
-    "一二三四五六日响应析客户端初始番茄工分休作完于弃同条翻页毕中息钟切换";
+    "一二三四五六日响应析客户端初始番茄工分休作完于弃同条翻页毕中息钟切换成步放已后";
 
 LV_FONT_DECLARE(app_font_16);
 LV_FONT_DECLARE(app_font_20);
@@ -420,15 +420,19 @@ void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending,
         bool work = mode == APP_UI_FOCUS_WORK;
         uint32_t accent = work ? COL_WORK : COL_REST;
 
-        lv_obj_t *pill = make_panel(s_scr, 70, 20, 100, 34, lv_color_hex(accent));
-        lv_obj_set_style_radius(pill, 17, 0);
+        // 配额页同款大卡片承载全部倒计时元素
+        lv_obj_t *card = make_panel(s_scr, 12, 34, 216, 236,
+                                    lv_color_hex(COL_PANEL));
+
+        lv_obj_t *pill = make_panel(card, 48, 12, 120, 32, lv_color_hex(accent));
+        lv_obj_set_style_radius(pill, 16, 0);
         lv_obj_t *pill_label = make_label(pill, work ? "工作中" : "休息中",
                                           &app_font_16, lv_color_hex(COL_WHITE));
         lv_obj_center(pill_label);
 
-        s_focus_arc = lv_arc_create(s_scr);
-        lv_obj_set_size(s_focus_arc, 168, 168);
-        lv_obj_align(s_focus_arc, LV_ALIGN_CENTER, 0, -8);
+        s_focus_arc = lv_arc_create(card);
+        lv_obj_set_size(s_focus_arc, 140, 140);
+        lv_obj_align(s_focus_arc, LV_ALIGN_CENTER, 0, 10);
         lv_arc_set_rotation(s_focus_arc, 0);
         lv_arc_set_bg_angles(s_focus_arc, 0, 360);
         lv_arc_set_range(s_focus_arc, 0, 100);
@@ -442,13 +446,13 @@ void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending,
         lv_obj_set_style_arc_rounded(s_focus_arc, true, LV_PART_MAIN);
         lv_obj_set_style_arc_rounded(s_focus_arc, true, LV_PART_INDICATOR);
 
-        s_focus_time = make_label(s_scr, "00:00", &lv_font_montserrat_48,
+        s_focus_time = make_label(card, "00:00", &lv_font_montserrat_48,
                                   lv_color_hex(COL_TEXT));
-        lv_obj_align(s_focus_time, LV_ALIGN_CENTER, 0, -8);
+        lv_obj_align(s_focus_time, LV_ALIGN_CENTER, 0, 10);
 
-        s_focus_finish = make_label(s_scr, "", &s_font_16_sym,
+        s_focus_finish = make_label(card, "", &s_font_16_sym,
                                     lv_color_hex(COL_SUB));
-        lv_obj_align(s_focus_finish, LV_ALIGN_CENTER, 0, 78);
+        lv_obj_align(s_focus_finish, LV_ALIGN_CENTER, 0, 96);
     }
 
     const char *hint_txt =
