@@ -198,24 +198,9 @@ static void footer_refresh(app_wifi_state_t st) {
     uint64_t remain_ms = s_app.next_fetch_ms > now_ms()
                              ? s_app.next_fetch_ms - now_ms() : 0;
     uint32_t next_s = (uint32_t)(remain_ms / 1000ULL);
-    // 套餐名小写转大写作前缀;过长(如 enterprise)放不下就不显示。
-    char lvl[8] = "";
-    size_t lvl_len = strlen(s_app.result.level);
-    if (lvl_len > 0 && lvl_len <= 6) {
-        for (size_t i = 0; i < lvl_len; i++) {
-            char c = s_app.result.level[i];
-            lvl[i] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
-        }
-    }
-    if (lvl[0]) {
-        snprintf(text, sizeof(text), "%s · 更新 %02u:%02u · 下次 %02u:%02u",
-                 lvl, (unsigned)(t / 3600U), (unsigned)((t % 3600U) / 60U),
-                 (unsigned)(next_s / 60U), (unsigned)(next_s % 60U));
-    } else {
-        snprintf(text, sizeof(text), "更新 %02u:%02u · 下次 %02u:%02u",
-                 (unsigned)(t / 3600U), (unsigned)((t % 3600U) / 60U),
-                 (unsigned)(next_s / 60U), (unsigned)(next_s % 60U));
-    }
+    snprintf(text, sizeof(text), "更新 %02u:%02u · 下次 %02u:%02u",
+             (unsigned)(t / 3600U), (unsigned)((t % 3600U) / 60U),
+             (unsigned)(next_s / 60U), (unsigned)(next_s % 60U));
     app_ui_dash_set_footer(text, false);
 }
 
