@@ -66,14 +66,15 @@ bool quota_fetch_now(const char *key, quota_data_t *out,
     esp_http_client_set_header(client, "Content-Type", "application/json");
 
     esp_err_t err = esp_http_client_perform(client);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "请求失败: %s", esp_err_to_name(err));
-        snprintf(errbuf, errlen, "网络错误");
-        esp_http_client_cleanup(client);
-        return false;
-    }
+    // perform 非 OK 时也可能已收到状态码(如 esp_http_client 对 401 返回
+    // ESP_ERR_NOT_SUPPORTED),与 focus_sync 同判法:有状态码按状态码分流。
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
+    if (err != ESP_OK && status <= 0) {
+        ESP_LOGW(TAG, "请求失败: %s", esp_err_to_name(err));
+        snprintf(errbuf, errlen, "网络错误");
+        return false;
+    }
 
     if (status == 401) {
         snprintf(errbuf, errlen, "Key 无效(401)");

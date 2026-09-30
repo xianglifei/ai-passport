@@ -2,9 +2,7 @@
 // 已用百分比、剩余比例条、重置时刻与倒计时;页脚承载轮询状态,右上角状态点+电量。
 #include "app_ui.h"
 
-#include "esp_heap_caps.h"
 #include "esp_log.h"
-#include "esp_system.h"
 #include "lvgl.h"
 #include "quota_model.h"
 
@@ -348,8 +346,6 @@ void app_ui_dash_set_focus_dot(bool running, bool work) {
 // 选中卡高亮底+主题色描边,OK 开始);倒计时=胶囊+圆环;DONE=完成横幅。
 // 方向键一律用 LVGL 符号宏(字面 ↑↓ 字体缺字)。
 // ---------------------------------------------------------------------------
-static lv_obj_t *s_focus_card[2];       // 空闲态两张焦点卡(IDLE 时有效)
-
 static void focus_card_style(lv_obj_t *card, bool selected, lv_color_t accent) {
     lv_obj_set_style_bg_color(card, selected ? lv_color_hex(COL_PANEL_HI)
                                              : lv_color_hex(COL_PANEL), 0);
@@ -412,8 +408,7 @@ void app_ui_show_focus(app_ui_focus_mode_t mode, uint16_t pending,
         lv_obj_t *done = make_label(s_scr, "工作完成！", &app_font_20,
                                     lv_color_hex(COL_GOLD));
         lv_obj_align(done, LV_ALIGN_CENTER, 0, 42);
-        lv_obj_t *next = make_label(s_scr,
-                                    "按 " LV_SYMBOL_DOWN " 开始休息",
+        lv_obj_t *next = make_label(s_scr, "按 OK 开始休息",
                                     &s_font_20_sym, lv_color_hex(COL_TEXT));
         lv_obj_align(next, LV_ALIGN_CENTER, 0, 78);
     } else {
@@ -548,9 +543,17 @@ void app_ui_set_battery(int soc) {
 
 void app_ui_toast(const char *text) {
     if (!s_scr) return;
-    s_toast = make_panel(s_scr, 60, 150, 120, 40, lv_color_hex(COL_REST));
-    lv_obj_set_style_radius(s_toast, 20, 0);
+    // 宽度随文案自适应(LV_SIZE_CONTENT),长提示不再溢出胶囊。
+    s_toast = lv_obj_create(s_scr);
+    lv_obj_set_size(s_toast, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_color(s_toast, lv_color_hex(COL_REST), 0);
     lv_obj_set_style_bg_opa(s_toast, 230, 0);
+    lv_obj_set_style_radius(s_toast, 20, 0);
+    lv_obj_set_style_border_width(s_toast, 0, 0);
+    lv_obj_set_style_pad_hor(s_toast, 18, 0);
+    lv_obj_set_style_pad_ver(s_toast, 8, 0);
+    lv_obj_clear_flag(s_toast, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(s_toast, LV_ALIGN_CENTER, 0, 10);
     lv_obj_t *label = make_label(s_toast, text, &app_font_20,
                                  lv_color_hex(COL_WHITE));
     lv_obj_center(label);
@@ -578,6 +581,5 @@ void app_ui_init(void) {
     lv_obj_align(s_battery, LV_ALIGN_TOP_RIGHT, -14, 12);
 
     memset(&s_data, 0, sizeof(s_data));
-    app_ui_show_dash(true);
-    ESP_LOGI(TAG, "仪表盘构建完成: 空闲堆=%u", (unsigned)esp_get_free_heap_size());
+    // 首屏由调用方按凭据状态选择(app_ui_show_dash / enter_setup),不在此预建。
 }

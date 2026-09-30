@@ -16,6 +16,8 @@ typedef enum {
 } focus_sync_result_t;
 
 // 上报一批会话。recs 须为**真 UTC 毫秒**(记录点已折算);token 为 Bearer 凭证。
-// 返回 OK 时调用方才可清掉这批记录。
+// 返回 OK 时 *uploaded 为实际写入请求体的条数(缓冲不够时会少于 n,当前
+// 常量下不会发生);调用方只应清除已上传的条数,余下的留给下一批。
 focus_sync_result_t focus_sync_upload(const char *token,
-                                      const focus_rec_t *recs, size_t n);
+                                      const focus_rec_t *recs, size_t n,
+                                      uint16_t *uploaded);

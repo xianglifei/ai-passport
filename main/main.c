@@ -1,18 +1,18 @@
-// main/main.c —— 双应用:GLM 额度监视 + 番茄钟(简化版),上下键翻页。
+// main/main.c —— 双应用:GLM 额度监视 + 番茄钟,三焦点循环导航。
 //
 // 额度页(默认):两张限额卡(已用百分比/比例条/重置时刻)+ 页脚轮询状态 +
 // 标题行状态点(网络 + 番茄后台计时)。每 5 分钟拉取,失败 60 秒重试,
 // 断线自动重连(30 秒周期),在线常驻。
-// 番茄页:↑ 直接开始工作 25 分,↓ 直接开始休息 10 分,OK 单击=开始工作;
-// 倒计时中长按 OK 放弃(不入库);长按 ↑/↓ 翻页,计时后台继续。
+// 番茄页:空闲态两张焦点卡(工作 25 分/休息 10 分),倒计时态大卡片圆环。
 // 完成的会话记录真 UTC 毫秒时间戳,NVS 暂存,在线批量上报 Let's farm
 // (/sync,幂等去重),上报成功才清本地;放弃的会话不记录。
 //
-// 按键语义(上下键优先服务当前页;额度页无页内用途,单击即翻页):
-//   额度页  ↑/↓ 单击或长按 = 番茄页;OK 单击 = 立即更新;OK 长按 = 配网
-//   番茄页  ↑ = 工作 / ↓ = 休息 / OK = 工作(空闲);长按 OK = 放弃(倒计时);
-//           ↑/↓/OK 单击 = 开始休息(完成横幅);长按 ↑/↓ = 翻页(全状态)
-//   配网页  OK = 返回;长按 DOWN = 重开热点
+// 按键语义(三焦点:额度页→工作卡→休息卡,↓ 正向循环,页面跟焦点走):
+//   ↑/↓        任意页、单击/长按一律只做焦点循环(倒计时照跑,后台继续)
+//   额度页焦点   OK 单击 = 立即更新;OK 长按 = 配网
+//   工作/休息卡  OK 单击 = 开始对应会话;倒计时中 OK 长按 = 放弃(不入库)
+//   完成横幅    OK 单击 = 开始休息;OK 长按 = 清横幅(到时也会自动消失)
+//   配网页     OK = 返回;长按 DOWN = 重开热点
 //
 // 线程模型:按键回调只入队;input 任务持 bsp_lvgl_lock 处理输入;
 // app_tick 跑在 LVGL 任务内(免锁);Wi-Fi/HTTPS/NVS/上报在 work 任务
@@ -27,6 +27,7 @@
 #include "bsp_display.h"
 #include "bsp_pins.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "focus_model.h"
 #include "focus_store.h"
@@ -111,15 +112,19 @@ typedef struct {
     focus_rec_t focus_snap[FOCUS_SNAP_MAX];
     uint16_t focus_snap_n;
     bool sync_inflight;
-    bool sync_ready;                // worker 写完一批上报结果
+    volatile bool sync_ready;       // worker 写完一批上报结果(先写数据后置标志)
     focus_sync_result_t sync_result;
+    uint16_t sync_uploaded;         // 成功批实际写入请求体的条数(截断时少于快照数)
     uint64_t sync_retry_at_ms;      // 上报失败后下次重试;0=未排期
 
-    // 配额拉取调度与结果(worker 写结果,app_tick 消费;标志位交付)
+    // 配额拉取调度与结果(worker 写结果,app_tick 消费;标志位交付:
+    // worker 先写数据、后置 volatile 就绪标志,C3 单核下程序序即生效,
+    // 换多核芯片须升级为原子/临界区。api_key 由 LVGL 任务改写、worker 读,
+    // 极端撕裂读至多导致一次失败拉取,自愈,不另加锁)
     bool fetch_inflight;
     uint64_t next_fetch_ms;     // 单调毫秒;0 = 尚未排期
-    bool result_ready;
-    bool result_ok;
+    volatile bool result_ready;
+    volatile bool result_ok;
     quota_data_t result;
     bool result_live;           // result 是实时数据(否则为开机快照,显示灰色)
     char fetch_err[48];
@@ -145,7 +150,9 @@ static uint64_t wall_sec(void) {
 static void enqueue_work(work_type_t type) {
     if (!s_app.work_queue) return;
     work_item_t item = { .type = type };
-    xQueueSend(s_app.work_queue, &item, 0);
+    if (xQueueSend(s_app.work_queue, &item, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "工作队列满,丢弃任务 %d", (int)type);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -362,7 +369,12 @@ static void request_sync_upload(void) {
            (size_t)s_app.focus_snap_n * sizeof(focus_rec_t));
     s_app.sync_inflight = true;
     work_item_t item = { .type = WORK_SYNC_UPLOAD, .a = s_app.focus_snap_n };
-    xQueueSend(s_app.work_queue, &item, 0);
+    if (xQueueSend(s_app.work_queue, &item, 0) != pdTRUE) {
+        // 队列满:回滚 inflight 并择时重试,否则上报会永久停摆。
+        s_app.sync_inflight = false;
+        s_app.sync_retry_at_ms = now_ms() + SYNC_RETRY_MS;
+        return;
+    }
 }
 
 // worker 的上报结果消费(在 LVGL 任务内调用);成功才清快照,失败择时重试。
@@ -371,9 +383,11 @@ static void consume_sync_result(void) {
     s_app.sync_ready = false;
     s_app.sync_inflight = false;
     if (s_app.sync_result == FOCUS_SYNC_OK) {
-        focus_store_drop_oldest(&s_app.focus, s_app.focus_snap_n);
+        // 只清实际写入请求体的条数;若因截断没传完,紧接着再发一批。
+        focus_store_drop_oldest(&s_app.focus, s_app.sync_uploaded);
         app_store_save_focus_buf(&s_app.focus);
         ESP_LOGI(TAG, "会话上报成功,剩余待传 %u 条", (unsigned)s_app.focus.count);
+        if (s_app.focus.count) request_sync_upload();
     } else {
         s_app.sync_retry_at_ms = now_ms() + SYNC_RETRY_MS;
         ESP_LOGW(TAG, "会话上报失败(%d),%u 条待重试",
@@ -510,7 +524,7 @@ static void worker_task(void *arg) {
         }
         case WORK_SYNC_UPLOAD:
             s_app.sync_result = focus_sync_upload(
-                s_app.sync_token, s_app.focus_snap, item.a);
+                s_app.sync_token, s_app.focus_snap, item.a, &s_app.sync_uploaded);
             s_app.sync_ready = true;
             break;
         }
@@ -751,19 +765,15 @@ void app_main(void) {
 
     if (bsp_lvgl_lock(1000)) {
         app_ui_init();
-        bool has_key = s_app.api_key[0] != 0;
-        if (has_wifi_creds && has_key) {
-            s_app.page = PAGE_DASH;
-            app_ui_show_dash(has_key);
-            if (snapshot.valid) {
-                app_ui_dash_set_quota(&snapshot, true);
-            }
+        if (has_wifi_creds && s_app.api_key[0]) {
+            show_dash_page();             // 内部按 s_app.result 快照整绘
         } else {
-            enter_setup();              // 凭据或 Key 缺失:开机即配网
+            enter_setup();                // 凭据或 Key 缺失:开机即配网
         }
         app_ui_set_battery(bsp_battery_soc());
         bsp_lvgl_unlock();
     }
+    ESP_LOGI(TAG, "开机屏幕就绪: 空闲堆=%u", (unsigned)esp_get_free_heap_size());
 
     s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
     if (s_input_queue &&

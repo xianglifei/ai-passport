@@ -17,7 +17,9 @@ static const char *SYNC_URL = "https://pomodoro-api.feixing.io/sync";
 #define JSON_BUF_SIZE (FOCUS_STORE_CAP * 72 + 32)
 
 focus_sync_result_t focus_sync_upload(const char *token,
-                                      const focus_rec_t *recs, size_t n) {
+                                      const focus_rec_t *recs, size_t n,
+                                      uint16_t *uploaded) {
+    if (uploaded) *uploaded = 0;
     if (!token || !token[0]) return FOCUS_SYNC_ERR_TOKEN;
     if (n == 0) return FOCUS_SYNC_OK;
 
@@ -27,12 +29,14 @@ focus_sync_result_t focus_sync_upload(const char *token,
         return FOCUS_SYNC_ERR_NET;
     }
     size_t off = (size_t)snprintf(body, JSON_BUF_SIZE, "{\"records\":[");
+    uint16_t appended = 0;
     for (size_t i = 0; i < n && off < JSON_BUF_SIZE - 96; i++) {
         off += (size_t)snprintf(
             body + off, JSON_BUF_SIZE - off, "%s{\"type\":\"%s\",\"start\":%llu,\"end\":%llu}",
             i ? "," : "", recs[i].type == FOCUS_TYPE_WORK ? "work" : "rest",
             (unsigned long long)recs[i].start_ms,
             (unsigned long long)recs[i].end_ms);
+        appended++;
     }
     off += (size_t)snprintf(body + off, JSON_BUF_SIZE - off, "]}");
 
@@ -60,7 +64,9 @@ focus_sync_result_t focus_sync_upload(const char *token,
         ESP_LOGW(TAG, "上报网络失败: %s", esp_err_to_name(err));
         result = FOCUS_SYNC_ERR_NET;
     } else if (status == 200) {
-        ESP_LOGI(TAG, "上报成功: %u 条", (unsigned)n);
+        // 只认实际写入请求体的条数;若因截断少于 n,余下由调用方再发一批。
+        if (uploaded) *uploaded = appended;
+        ESP_LOGI(TAG, "上报成功: %u/%u 条", (unsigned)appended, (unsigned)n);
         result = FOCUS_SYNC_OK;
     } else if (status == 401) {
         ESP_LOGW(TAG, "同步凭证过期(401),需重新注入 token");
