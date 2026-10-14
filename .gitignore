@@ -11,3 +11,6 @@ managed_components/
 /.agents/skills/passport-build
 /.agents/skills/passport-device-test
 /.agents/skills/passport-debug
+
+# 卡卡资产:逐帧 PNG 可由生成器随时重建,只留接触表预览与源码产物
+assets/cat/png/
