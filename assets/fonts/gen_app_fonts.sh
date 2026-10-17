@@ -10,7 +10,7 @@ LV_FONT_CONV_VERSION=1.5.3
 
 # 应用全部固定文案的汉字清单(ASCII 走 --range)。
 # 新增页面文案后同步更新此清单与 main/pet_font.h 的 PET_GLYPH_SET,再重新生成。
-SYMS="卡喂食刷毛晒太阳散步静音开关睡着了晚安"
+SYMS="卡喂食刷毛晒太阳散步静音开关睡着了晚安音量高中回忆第次长大了想你了怎么玩换始按觉咪团子布丁煤球橘上下吃饱改名"
 RANGE="0x20-0x7E"
 
 for size in 16 20; do

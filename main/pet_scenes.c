@@ -47,6 +47,9 @@ static uint32_t s_brush_until;    // 刷毛:刷子扫动截止
 static uint32_t s_jump_until;     // 散步:扑跳姿态截止
 static uint8_t s_eaten;           // 本次已吃几条(与 fish 图标联动)
 static uint8_t s_strokes_shown;   // 已点亮的爪印数
+static uint32_t s_poke_until;     // 戳一戳:微反馈截止
+static uint32_t s_poke_base_x;    // 戳一戳:猫的原位 x(结束时归位)
+static bool s_poke_active;        // 戳一戳结束后需要一次归位
 
 static lv_obj_t *sc_rect(lv_obj_t *parent, int32_t x, int32_t y,
                          int32_t w, int32_t h, lv_color_t color,
@@ -95,17 +98,29 @@ static void sc_reset_state(void) {
     s_eat_until = s_brush_until = s_jump_until = 0;
     s_eaten = 0;
     s_strokes_shown = 0;
+    s_poke_until = 0;
+    s_poke_active = false;
 }
 
 bool pet_scenes_active(void) {
     return s_scene != PET_ACTIVITY_NONE;
 }
 
+// 换屏/删屏前必调:指针指向的对象随旧屏释放,不清就成了悬空指针。
+void pet_scenes_stop(void) {
+    s_scene = PET_ACTIVITY_NONE;
+    sc_reset_state();
+}
+
 // —— 各场景搭建 ——
-static void build_feed(lv_obj_t *scr) {
+static void build_feed(lv_obj_t *scr, const pet_model_t *m) {
     sc_rect(scr, 0, 260, 240, 60, COL_FLOOR_WARM, 0);
     for (int i = 0; i < 3; i++) {
         s_fish[i] = sc_img(scr, &kaka_art_icon_feed, 12 + i * 40, 12);
+        // 已饱时进场景就把鱼置灰:一眼看懂"现在吃不下",不用按了才知道
+        if (m->fullness >= 95) {
+            lv_obj_set_style_img_opa(s_fish[i], 90, 0);
+        }
     }
     s_bowl = sc_img(scr, &kaka_art_prop_bowl, 12, 224);
     s_cat = sc_img(scr, &kaka_art_cat_eat0, 72, 96);
@@ -127,35 +142,48 @@ static void build_sun(lv_obj_t *scr) {
     sc_rect(scr, 0, 252, 240, 68, COL_SUNGROUND, 0);
     s_cat = sc_img(scr, &kaka_art_cat_lie_a, 40, 100);
     s_butterfly = sc_img(scr, &kaka_art_prop_butterfly, 60, 80);
-    s_zzz = sc_img(scr, &kaka_art_prop_zzz, 168, 88);
+    // Zzz 锚在猫头顶右侧(躺姿头朝左,头顶约在场景 (48..95,156)):
+    // 从 (88,134) 漂起,贴着脑袋,不再远远挂在右上角
+    s_zzz = sc_img(scr, &kaka_art_prop_zzz, 88, 134);
 }
 
-static void build_walk(lv_obj_t *scr) {
+static void build_walk(lv_obj_t *scr, const pet_model_t *m) {
+    // 局部随机源:由存档计数混合而成,每次散步配色都不同且可复现
+    uint32_t r = m->feed_fish ^ (m->walk_count << 7) ^ (m->brush_strokes << 3) ^
+                 (m->sun_count << 11) ^ m->rng;
+    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
     // 天空底部小路 + 草
+    static const uint32_t skies[3] = { 0x9AD7F5, 0xB7E3F2, 0xF3D9C4 };  // 晴/薄云/黄昏
+    lv_obj_set_style_bg_color(scr, lv_color_hex(skies[r % 3]), 0);
     sc_rect(scr, 0, 216, 240, 30, lv_color_hex(0x7CC95E), 0);
     sc_rect(scr, 0, 246, 240, 74, COL_ROAD, 0);
     for (int i = 0; i < 4; i++) {
         s_dashes[i] = sc_rect(scr, i * 70, 292, 36, 6, COL_ROAD_DASH, 2);
     }
-    // 房子(视差层,anim 里滚动);lv_color_hex 非编译期常量,存原始值
-    static const uint32_t house_hex[3] = { 0xF7B1A5, 0xA8C8F0, 0xF5D98A };
+    // 房子(视差层,anim 里滚动):从 5 色调色板里挑 3 个不重样的
+    static const uint32_t palette[5] = { 0xF7B1A5, 0xA8C8F0, 0xF5D98A,
+                                         0xC9B8E8, 0xBFE3C0 };
     for (int i = 0; i < 3; i++) {
-        s_houses[i] = sc_rect(scr, 0, 136, 64, 80, lv_color_hex(house_hex[i]), 4);
+        r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+        s_houses[i] = sc_rect(scr, 0, 136, 64, 80,
+                              lv_color_hex(palette[(r + i) % 5]), 4);
     }
-    // 树 + 云
+    // 树 + 云(树的绿也换两种)
+    r ^= r << 13; r ^= r >> 17; r ^= r << 5;
+    uint32_t leaf = (r & 1) ? 0x5FAE4A : 0x4E9E5C;
     for (int i = 0; i < 2; i++) {
-        s_trees[i] = sc_rect(scr, 0, 168, 36, 48, lv_color_hex(0x5FAE4A), 18);
+        s_trees[i] = sc_rect(scr, 0, 168, 36, 48, lv_color_hex(leaf), 18);
     }
     for (int i = 0; i < 2; i++) {
         s_clouds[i] = sc_rect(scr, 0, 26 + i * 38, 52, 18, COL_WHITE, 9);
     }
     s_collar = sc_img(scr, &kaka_art_prop_collar, 10, 10);
     s_cat = sc_img(scr, &kaka_art_cat_walk0, 56, 92);
-    s_butterfly = sc_img(scr, &kaka_art_prop_butterfly, 180, 70);
+    // 蝴蝶随机从左或右侧登场
+    s_butterfly = sc_img(scr, &kaka_art_prop_butterfly, (r & 2) ? 20 : 180, 70);
 }
 
 void pet_scenes_show(pet_activity_t a, const pet_model_t *m, int battery_soc) {
-    (void)m;
     s_scene = a;
     sc_reset_state();
 
@@ -171,7 +199,7 @@ void pet_scenes_show(pet_activity_t a, const pet_model_t *m, int battery_soc) {
         scr = sc_screen(COL_SUNBG);
         break;
     case PET_ACTIVITY_WALK:
-        scr = sc_screen(lv_color_hex(0x9AD7F5));
+        scr = sc_screen(lv_color_hex(0x9AD7F5));  // 底色,build_walk 会随机覆盖
         break;
     default:
         s_scene = PET_ACTIVITY_NONE;
@@ -182,7 +210,7 @@ void pet_scenes_show(pet_activity_t a, const pet_model_t *m, int battery_soc) {
 
     switch (a) {
     case PET_ACTIVITY_FEED:
-        build_feed(scr);
+        build_feed(scr, m);  // m 判断已饱时开局置灰鱼
         pet_audio_play(SND_WATER);
         break;
     case PET_ACTIVITY_BRUSH:
@@ -194,13 +222,26 @@ void pet_scenes_show(pet_activity_t a, const pet_model_t *m, int battery_soc) {
         pet_audio_play(SND_BIRDS);
         break;
     case PET_ACTIVITY_WALK:
-        build_walk(scr);
+        build_walk(scr, m);  // m 混出本次配色
         pet_audio_play(SND_BELL);
         pet_audio_play(SND_WIND);
         break;
     default:
         break;
     }
+    // 成长阶段与主界面同款:幼猫/少年缩小,脚底对齐
+    if (s_cat) {
+        lv_image_set_pivot(s_cat, 80, 160);
+        uint8_t st = pet_ui_stage();
+        lv_image_set_scale(s_cat, st == 0 ? 205 : (st == 1 ? 230 : 256));
+    }
+}
+
+void pet_scenes_poke(uint32_t now_ms) {
+    if (!s_cat) return;
+    s_poke_until = now_ms + 450;
+    s_poke_base_x = (uint32_t)lv_obj_get_x(s_cat);
+    s_poke_active = true;
 }
 
 void pet_scenes_interact(pet_interact_t r, uint32_t now_ms) {
@@ -219,7 +260,13 @@ void pet_scenes_interact(pet_interact_t r, uint32_t now_ms) {
             pet_ui_spawn_chunk(56, 240, lv_color_hex(0xF2DFC0), false);
             pet_audio_play(SND_MUNCH);
         } else if (r == PET_INTERACT_REFUSED) {
-            // 礼貌拒喂:眨眼 + 一颗爱心(回家庆祝再补完整演出)
+            // 礼貌拒喂:摇头(复用戳一戳演出)+ 置灰鱼 + 明说"吃饱了",
+            // 让孩子一眼看懂是猫饱了,而不是按键失灵
+            pet_scenes_poke(now_ms);
+            for (int i = 0; i < 3; i++) {
+                if (s_fish[i]) lv_obj_set_style_img_opa(s_fish[i], 90, 0);
+            }
+            pet_ui_toast("\u5403\u9971\u4e86!");  // 吃饱了!
             pet_ui_spawn_heart(60, 160);
             pet_audio_play(SND_MEOW_SWEET);
         }
@@ -294,11 +341,11 @@ static void anim_sun(uint32_t now) {
     int bx = 60 + (int)(60.0f * sinf(now / 900.0f));
     int by = 70 + (int)(26.0f * sinf(now / 470.0f));
     lv_obj_set_pos(s_butterfly, bx, by);
-    // Zzz 每 2.5s 漂起一次
+    // Zzz 每 2.5s 漂起一次:贴着头顶向右上方散开
     uint32_t ph = now % 2500;
     if (ph < 1400) {
         lv_obj_clear_flag(s_zzz, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_set_pos(s_zzz, 168 - (int)(ph / 200), 88 - (int)(ph / 160));
+        lv_obj_set_pos(s_zzz, 88 + (int)(ph / 200), 134 - (int)(ph / 160));
     } else {
         lv_obj_add_flag(s_zzz, LV_OBJ_FLAG_HIDDEN);
     }
@@ -341,6 +388,15 @@ void pet_scenes_anim(const pet_model_t *m, uint32_t now_ms) {
     (void)m;
     if (s_scene == PET_ACTIVITY_NONE || !s_cat) return;
     s_last_now = now_ms;
+    if (now_ms < s_poke_until) {  // 戳一戳优先:眯眼 + 左右小幅摆动
+        lv_image_set_src(s_cat, &kaka_art_cat_squint);
+        lv_obj_set_x(s_cat, (int32_t)(s_poke_base_x + (((now_ms / 90) % 2) ? 2 : -2)));
+        return;
+    }
+    if (s_poke_active) {  // 摆动结束,一次性归位
+        lv_obj_set_x(s_cat, (int32_t)s_poke_base_x);
+        s_poke_active = false;
+    }
     switch (s_scene) {
     case PET_ACTIVITY_FEED: anim_feed(now_ms); break;
     case PET_ACTIVITY_BRUSH: anim_brush(now_ms); break;

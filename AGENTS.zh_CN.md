@@ -70,7 +70,7 @@
 ./tools/validate.sh             # 完整门禁
 ```
 
-完整门禁要求已激活 ESP-IDF 5.5.3 环境。不得把编译成功描述成硬件验证成功。最终交付必须分别报告：
+完整门禁要求已激活 ESP-IDF 5.5.3 环境（本机：SDK 在 `~/esp/esp-idf-v5.5.3`，工具链在 `~/.espressif`，激活命令 `source ~/esp/esp-idf-v5.5.3/export.sh`；这两个目录是本仓库的成对编译环境，删除前先看 `~/esp` 内的 README）。不得把编译成功描述成硬件验证成功。最终交付必须分别报告：
 
 ```text
 Build: PASS / FAIL / NOT RUN

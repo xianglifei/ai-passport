@@ -1,10 +1,11 @@
 // main/pet_nvs.h —— 卡卡存档的 NVS 胶水(薄封装,不含业务逻辑)。
 //
-// 命名空间 "kaka_pet";键:"stats" blob / "mute" u8。
+// 命名空间 "kaka_pet";键:"stats" blob / "mute" u8 / "vol" u8 / "name" u8。
 // 任何失败都不致命:设备继续运行,只是不持久化。
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "pet_model.h"
 
@@ -19,3 +20,11 @@ bool pet_nvs_save(const pet_model_t *m);
 
 bool pet_nvs_mute(void);          // 当前是否静音(默认不静音)
 void pet_nvs_set_mute(bool on);   // 静音开关持久化
+
+// 音量档 0/1/2(默认 2 高);存档里读出非法值时回落默认。
+uint8_t pet_nvs_volume(void);
+void pet_nvs_set_volume(uint8_t level);
+
+// 名字索引 0..PET_NAME_COUNT-1;-1 表示首次开机尚未命名。
+int8_t pet_nvs_name(void);
+void pet_nvs_set_name(uint8_t idx);

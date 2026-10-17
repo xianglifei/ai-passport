@@ -49,18 +49,26 @@ static void test_decay_floor(void) {
 static void test_cold_boot(void) {
     pet_model_t m;
     pet_model_init(&m);
-    // 6h 等效:饱食 -30、干净 -18、心情 -12
-    pet_model_cold_boot(&m);
+    // 6h 等效:饱食 -30、干净 -18、心情 -12;掉得多 → 思念等级 2
+    uint8_t miss = pet_model_cold_boot(&m);
     assert(m.fullness == 40);
     assert(m.clean == 52);
     assert(m.happy == 68);
+    assert(miss == 2);
 
-    // 低状态再冷启动也只到下限
+    // 中等缺席:饱食 30 → 15(掉 15),思念等级 1
+    pet_model_set_stats(&m, 30, 70, 80);
+    miss = pet_model_cold_boot(&m);
+    assert(m.fullness == PET_STAT_MIN);
+    assert(miss == 1);
+
+    // 低状态再冷启动也只到下限:没怎么掉,不播重逢
     pet_model_set_stats(&m, 20, 20, 20);
-    pet_model_cold_boot(&m);
+    miss = pet_model_cold_boot(&m);
     assert(m.fullness == PET_STAT_MIN);
     assert(m.clean == PET_STAT_MIN);
     assert(m.happy == PET_STAT_MIN);
+    assert(miss == 0);
 }
 
 static void test_feed_and_refuse(void) {
@@ -80,12 +88,53 @@ static void test_feed_and_refuse(void) {
     assert(m.feed_fish == 3);
     assert(m.activity == PET_ACTIVITY_NONE);
 
-    // 已饱再喂:立即礼貌拒喂,不加不减
+    // 已饱再喂:礼貌拒喂,不加不减,也不退出场景(由 UI 数连续拒喂温柔收尾)
     assert(pet_model_start_activity(&m, PET_ACTIVITY_FEED));
     assert(pet_model_interact(&m) == PET_INTERACT_REFUSED);
     assert(m.fullness == 95);
     assert(m.feed_fish == 3);
-    assert(m.activity == PET_ACTIVITY_NONE);
+    assert(m.activity == PET_ACTIVITY_FEED);
+    pet_model_finish_activity(&m);
+}
+
+static void test_growth_and_milestone(void) {
+    pet_model_t m;
+    pet_model_init(&m);
+    assert(pet_model_growth_stage(&m) == 0);  // 新档:幼猫
+
+    // 19 轮"吃 3 条 + 刷 5 下"(每轮照顾量 +8,全程累计 152):
+    // 成长跨过 50(第 7 轮)与 150(第 19 轮)两个台阶;
+    // 里程碑在累计值每满 10 的那一次交互上置位,取走即清零。
+    for (int round = 1; round <= 19; round++) {
+        pet_model_set_stats(&m, 70, 70, 80);
+        uint32_t fish_before = m.feed_fish;
+        pet_model_start_activity(&m, PET_ACTIVITY_FEED);
+        pet_model_interact(&m);
+        pet_model_interact(&m);
+        pet_model_interact(&m);  // 第 3 条:ENDED
+        // 一轮 3 条,整十数可能落在其中任何一条上(如第 10 条是某轮第 1 条)
+        bool fish_crossed = m.feed_fish / PET_MILESTONE_STEP >
+                            fish_before / PET_MILESTONE_STEP;
+        pet_activity_t hit = pet_model_take_milestone(&m);
+        assert(hit == (fish_crossed ? PET_ACTIVITY_FEED : PET_ACTIVITY_NONE));
+        assert(m.milestone == PET_ACTIVITY_NONE);  // 取走即清零
+
+        pet_model_start_activity(&m, PET_ACTIVITY_BRUSH);
+        for (int i = 0; i < 5; i++) pet_model_interact(&m);
+        hit = pet_model_take_milestone(&m);
+        if (m.brush_strokes % 10 == 0) {
+            assert(hit == PET_ACTIVITY_BRUSH);
+        } else {
+            assert(hit == PET_ACTIVITY_NONE);
+        }
+
+        uint32_t care = m.feed_fish + m.brush_strokes;
+        uint8_t expect = care >= PET_GROWTH_T2 ? 2 : (care >= PET_GROWTH_T1 ? 1 : 0);
+        assert(pet_model_growth_stage(&m) == expect);
+    }
+    assert(m.feed_fish == 57);
+    assert(m.brush_strokes == 95);
+    assert(pet_model_growth_stage(&m) == 2);  // 152 ≥ 150:成年
 }
 
 static void test_brush_shine(void) {
@@ -205,6 +254,7 @@ int main(void) {
     test_decay_floor();
     test_cold_boot();
     test_feed_and_refuse();
+    test_growth_and_milestone();
     test_brush_shine();
     test_sun_walk_auto_finish();
     test_want_bubble();

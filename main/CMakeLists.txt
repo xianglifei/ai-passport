@@ -11,6 +11,13 @@ idf_component_register(
          "pet_art.c"
     INCLUDE_DIRS "."
     REQUIRES bsp esp_timer nvs_flash
+    EMBED_FILES "snd/meow_greet.pcm"
+                "snd/meow_happy.pcm"
+                "snd/meow_sweet.pcm"
+                "snd/meow_hungry.pcm"
+                "snd/meow_sleepy.pcm"
+                "snd/meow_squeak.pcm"
+                "snd/meow_trill.pcm"
 )
 
 # 中文字体子集(生成方式见 assets/fonts/gen_app_fonts.sh;勿 #include 其 .c)

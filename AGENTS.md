@@ -75,7 +75,7 @@ Run the smallest relevant check while iterating, then run the complete gate befo
 ./tools/validate.sh             # complete gate
 ```
 
-The complete gate requires an activated ESP-IDF 5.5.3 environment. Do not describe a successful build as hardware validation. Final delivery must report these fields separately:
+The complete gate requires an activated ESP-IDF 5.5.3 environment (on this machine: SDK at `~/esp/esp-idf-v5.5.3`, toolchain at `~/.espressif`; activate with `source ~/esp/esp-idf-v5.5.3/export.sh` — both directories are build-environment pairs for this repo, see the README inside `~/esp` before ever deleting them). Do not describe a successful build as hardware validation. Final delivery must report these fields separately:
 
 ```text
 Build: PASS / FAIL / NOT RUN

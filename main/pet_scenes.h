@@ -13,12 +13,20 @@
 // 进入活动场景(整屏重建)。battery_soc 供右上角电量显示。
 void pet_scenes_show(pet_activity_t a, const pet_model_t *m, int battery_soc);
 
+// 结束场景展示:清空场景登记表。场景屏由 pet_ui_install_screen 删除后,
+// 残留的控件指针即成悬空指针,必须先调本函数再换屏,否则 80ms 动画
+// 心跳会持续对已释放对象做 lv_image_set_src/lv_obj_set_x(use-after-free)。
+void pet_scenes_stop(void);
+
 // 当前是否有活动场景在展示。
 bool pet_scenes_active(void);
 
 // 一次交互的演出(吃一口/刷一下/扑跳/唤醒);r 为模型返回的结果,
 // now_ms 为单调毫秒(用于演出计时)。
 void pet_scenes_interact(pet_interact_t r, uint32_t now_ms);
+
+// 戳一戳:场景内按上/下的微反馈(眯眼 + 小幅摆动,约 450ms)。
+void pet_scenes_poke(uint32_t now_ms);
 
 // 80ms 动画心跳:帧循环、粒子伴生位、视差滚动、扑跳姿态。
 void pet_scenes_anim(const pet_model_t *m, uint32_t now_ms);

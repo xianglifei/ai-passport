@@ -74,3 +74,42 @@ void pet_nvs_set_mute(bool on) {
     nvs_close(h);
     if (err != ESP_OK) ESP_LOGW(TAG, "静音开关保存失败: %s", esp_err_to_name(err));
 }
+
+uint8_t pet_nvs_volume(void) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return 2;
+    uint8_t v = 2;
+    nvs_get_u8(h, "vol", &v);  // 无键 = 高音量
+    nvs_close(h);
+    return v > 2 ? 2 : v;
+}
+
+void pet_nvs_set_volume(uint8_t level) {
+    if (level > 2) level = 2;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = nvs_set_u8(h, "vol", level);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "音量档保存失败: %s", esp_err_to_name(err));
+}
+
+int8_t pet_nvs_name(void) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return -1;
+    uint8_t v = 0xFF;
+    nvs_get_u8(h, "name", &v);  // 无键 = 尚未命名(首开机)
+    nvs_close(h);
+    if (v == 0xFF || v >= 6) return -1;  // 6 = PET_NAME_COUNT(见 pet_ui.h)
+    return (int8_t)v;
+}
+
+void pet_nvs_set_name(uint8_t idx) {
+    if (idx >= 6) return;  // 越界索引拒绝落盘
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    esp_err_t err = nvs_set_u8(h, "name", idx);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    if (err != ESP_OK) ESP_LOGW(TAG, "名字保存失败: %s", esp_err_to_name(err));
+}

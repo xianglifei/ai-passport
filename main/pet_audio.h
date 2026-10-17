@@ -7,6 +7,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef enum {
     SND_NONE = 0,
@@ -38,10 +39,15 @@ typedef enum {
 } pet_sound_t;
 
 // 初始化 BSP 音频 + 专属播放任务;失败不致命(游戏无声继续)。
+// 播放任务空闲时还会周期性"听一耳朵"麦克风(拍手/呼唤 → 喵一声回应,
+// 节流与回声抑制参数见 pet_audio.c);读取失败则本次上电内停用该特性。
 bool pet_audio_init(void);
 
 // 非阻塞播放:入队即返回;音频不可用或已静音时静默丢弃。
 void pet_audio_play(pet_sound_t s);
 
-// 静音开关(运行时切换;由 main 在 NVS 读出/按键切换时设置)。
-void pet_audio_set_muted(bool muted);
+// 音量三档:0 静音 / 1 中(60%) / 2 高(100%,出厂默认)。静音由本函数内部接管。
+void pet_audio_set_level(uint8_t level);
+
+// 成长阶段音高:幼猫更尖(1.16x)、少年次之(1.08x)、成年基准(1.0x)。
+void pet_audio_set_stage(uint8_t stage);

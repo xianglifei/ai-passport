@@ -33,6 +33,11 @@
 #define PET_IDLE_MEOW_ROLL_MS 1000u         // 掷骰间隔
 #define PET_IDLE_MEOW_CHANCE 5              // 每秒命中概率的倒数(约 1/25 → 均值 ~25s)
 
+// 成长阶段:按累计照顾量(吃鱼+刷毛+晒太阳+散步)推导,不单独存档
+#define PET_GROWTH_T1 50    // 幼猫 → 少年(约一个周末的陪伴量)
+#define PET_GROWTH_T2 150   // 少年 → 成年
+#define PET_MILESTONE_STEP 10  // 累计每满 10 次,UI 演出一次小庆祝
+
 typedef enum {
     PET_ACTIVITY_NONE = 0,
     PET_ACTIVITY_FEED,    // 喂食
@@ -53,7 +58,7 @@ typedef enum {
 typedef enum {
     PET_INTERACT_IDLE = 0,   // 不在活动中(忽略)
     PET_INTERACT_FED,        // 吃了一口鱼
-    PET_INTERACT_REFUSED,    // 礼貌拒喂(已饱,活动就此结束)
+    PET_INTERACT_REFUSED,    // 礼貌拒喂(已饱;不结束活动,UI 演出摇头/害羞)
     PET_INTERACT_BRUSHED,    // 刷了一下
     PET_INTERACT_SHINE,      // 第 5 下:毛发发亮(活动就此结束)
     PET_INTERACT_WOKE,       // 晒太阳中被确定键提前唤醒
@@ -82,11 +87,15 @@ typedef struct {
     uint32_t idle_ms;             // 距上次交互/喵叫
     uint32_t meow_roll_acc;       // 喵叫掷骰累积
     uint32_t rng;                 // xorshift32 状态(seed 后非零)
+    // 瞬态(不序列化):某项累计刚好跨过里程碑台阶时置为对应活动,
+    // 由 UI 取走(pet_model_take_milestone)后清零
+    pet_activity_t milestone;
 } pet_model_t;
 
 void pet_model_init(pet_model_t *m);
-// 冷启动:按 PET_COLD_BOOT_MS 等效衰减一次(读档后调用;封顶到下限)
-void pet_model_cold_boot(pet_model_t *m);
+// 冷启动:按 PET_COLD_BOOT_MS 等效衰减一次(读档后调用;封顶到下限)。
+// 返回"思念等级" 0..2:断电期间状态掉得越多越大,供 UI 播重逢演出。
+uint8_t pet_model_cold_boot(pet_model_t *m);
 // 心跳:now_ms 单调递增;内部含衰减、活动计时、自动结束、空闲喵叫判定
 void pet_model_tick(pet_model_t *m, uint32_t now_ms);
 
@@ -97,6 +106,12 @@ void pet_model_finish_activity(pet_model_t *m);
 pet_want_t pet_model_want(const pet_model_t *m);
 // 空闲喵叫判定(tick 内部推进;此函数供测试断言与 UI 查询)
 bool pet_model_should_meow(pet_model_t *m);
+
+// 成长阶段 0 幼猫 / 1 少年 / 2 成年:由累计照顾量推导(无需存档)
+uint8_t pet_model_growth_stage(const pet_model_t *m);
+// 取走待演出的里程碑(累计某项刚跨过 PET_MILESTONE_STEP 的倍数);
+// 返回 PET_ACTIVITY_NONE 表示没有。取走即清零。
+pet_activity_t pet_model_take_milestone(pet_model_t *m);
 
 // —— 测试辅助:直接改状态(仅 host 测试与读档恢复用) ——
 void pet_model_set_stats(pet_model_t *m, uint8_t full, uint8_t clean, uint8_t happy);

@@ -11,11 +11,13 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
 
 #include "bsp_audio.h"
+#include "snd_samples.h"
 
 static const char *TAG = "kaka_audio";
 
@@ -23,6 +25,15 @@ static const char *TAG = "kaka_audio";
 #define CHUNK 512
 #define PLAY_QUEUE_DEPTH 4
 #define TWO_PI 6.28318530718f
+
+// —— 声音回应(麦克风):空闲时每 3s 听 20ms;响过之后 1.5s 内不听
+//    (避免听到自家喇叭的余音),两次回应至少隔 6s。读取失败整个特性
+//    本次上电停用 —— 声音回应只是彩蛋,绝不影响正常播放。 ——
+#define VOICE_POLL_US (3u * 1000u * 1000u)
+#define VOICE_ECHO_GUARD_US (1500u * 1000u)
+#define VOICE_REPLY_GAP_US (6u * 1000u * 1000u)
+#define VOICE_SAMPLES 320                 // 20ms @ 16kHz
+#define VOICE_THRESHOLD 9000              // 峰值门限(≈ -11dBFS,近处说话/拍手)
 
 // —— 配方 ——
 enum { KIND_TONE, KIND_NOTES, KIND_NOISE };
@@ -126,6 +137,53 @@ static QueueHandle_t s_play_q;
 static TaskHandle_t s_task;
 static volatile bool s_muted;
 static bool s_ok;
+// 音量档(0/1/2)与成长音高(幼猫尖、成年沉)
+static uint8_t s_level = 2;
+static float s_pitch = 1.0f;
+static uint32_t s_step_q16 = 65536u;  // 采样播放步进(Q16,=65536*音高)
+// 声音回应状态(仅音频任务访问)
+static bool s_voice_ok = true;
+static uint64_t s_voice_next_us;    // 下次可听时刻
+static uint64_t s_reply_ok_us;      // 下次可回应时刻
+static uint64_t s_last_sound_us;    // 最近一次播音结束时刻
+static uint32_t s_vrng = 0xC0FFEE11u;
+
+// —— 真实猫叫采样层(CC0,来源见 assets/snd/README.md) ——
+// 喵声类声音优先走采样;效果类(咀嚼/铃铛/…)与无采样的喵仍走合成器。
+typedef struct {
+    const uint8_t *start;
+    const uint8_t *end;      // start == NULL 表示该声音无采样
+} snd_sample_ref_t;
+
+static const snd_sample_ref_t SAMPLES[] = {
+    [SND_MEOW_GREET]  = { _binary_meow_greet_pcm_start,
+                          _binary_meow_greet_pcm_end },
+    [SND_MEOW_HAPPY]  = { _binary_meow_happy_pcm_start,
+                          _binary_meow_happy_pcm_end },
+    [SND_MEOW_SWEET]  = { _binary_meow_sweet_pcm_start,
+                          _binary_meow_sweet_pcm_end },
+    [SND_MEOW_HUNGRY] = { _binary_meow_hungry_pcm_start,
+                          _binary_meow_hungry_pcm_end },
+    [SND_MEOW_SLEEPY] = { _binary_meow_sleepy_pcm_start,
+                          _binary_meow_sleepy_pcm_end },
+    [SND_SQUEAK]      = { _binary_meow_squeak_pcm_start,
+                          _binary_meow_squeak_pcm_end },
+    [SND_TRILL]       = { _binary_meow_trill_pcm_start,
+                          _binary_meow_trill_pcm_end },
+};
+
+typedef struct {
+    const uint8_t *pcm;  // 16bit 小端裸 PCM(flash)
+    uint32_t n;          // 样本数
+    uint32_t pos_q16;    // Q16 播放位置(步进=成长音高)
+} samp_t;
+
+static samp_t s_samp;
+
+// 嵌入符号无对齐保证:逐字节拼 16bit,避免非对齐访问异常
+static inline int16_t ld_i16(const uint8_t *p) {
+    return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
 
 static float synth_noise(synth_t *st) {
     // 16bit LFSR → [-1,1]
@@ -224,6 +282,7 @@ static bool synth_next(synth_t *st, int16_t *out) {
     } else {
         float f = (r->kind == KIND_NOTES) ? synth_note_freq(st, pct)
                                           : synth_freq(r, pct);
+        f *= s_pitch;  // 成长阶段整体音高
         if (f <= 0) {
             sample = 0;  // 休止符
         } else {
@@ -252,23 +311,87 @@ static bool synth_next(synth_t *st, int16_t *out) {
     return true;
 }
 
+// 采样就绪:返回 true,后续用 samp_next 出样;无采样返回 false(走合成器)
+static bool samp_start(pet_sound_t s) {
+    if (s <= SND_NONE || (size_t)s >= sizeof(SAMPLES) / sizeof(SAMPLES[0])) {
+        return false;
+    }
+    if (!SAMPLES[s].start) return false;
+    s_samp.pcm = SAMPLES[s].start;
+    s_samp.n = (uint32_t)(SAMPLES[s].end - SAMPLES[s].start) / 2;
+    s_samp.pos_q16 = 0;
+    return true;
+}
+
+// 线性插值重采样:步进由成长音高决定(幼猫 1.16x 更尖更快)
+static bool samp_next(samp_t *st, int16_t *out) {
+    uint32_t i = st->pos_q16 >> 16;
+    if (i + 1 >= st->n) return false;
+    uint32_t frac = st->pos_q16 & 0xFFFFu;
+    int32_t a = ld_i16(&st->pcm[i * 2]);
+    int32_t b = ld_i16(&st->pcm[(i + 1) * 2]);
+    *out = (int16_t)(a + (((b - a) * (int32_t)frac) >> 16));
+    st->pos_q16 += s_step_q16;
+    return true;
+}
+
+// 声音回应:空闲时听 20ms,够响(近处说话/拍手)就挑一句喵回应。
+// 全部状态只有音频任务自己访问;任何失败都只是停用彩蛋,不影响播放。
+static void voice_poll(void) {
+    if (!s_ok || !s_voice_ok || s_muted) return;
+    uint64_t now_us = (uint64_t)esp_timer_get_time();
+    if (now_us < s_voice_next_us) return;
+    s_voice_next_us = now_us + VOICE_POLL_US;
+    // 刚播过音:喇叭余音未散,这轮不听
+    if (now_us - s_last_sound_us < VOICE_ECHO_GUARD_US) return;
+
+    static int16_t win[VOICE_SAMPLES];
+    if (bsp_audio_read(win, sizeof(int16_t) * VOICE_SAMPLES) != ESP_OK) {
+        s_voice_ok = false;
+        ESP_LOGW(TAG, "麦克风不可用,本次上电停用声音回应");
+        return;
+    }
+    int16_t peak = 0;
+    for (int i = 0; i < VOICE_SAMPLES; i++) {
+        int16_t a = win[i] < 0 ? (int16_t)-win[i] : win[i];
+        if (a > peak) peak = a;
+    }
+    if (peak < VOICE_THRESHOLD || now_us < s_reply_ok_us) return;
+    s_reply_ok_us = now_us + VOICE_REPLY_GAP_US;
+    s_vrng ^= s_vrng << 13;
+    s_vrng ^= s_vrng >> 17;
+    s_vrng ^= s_vrng << 5;
+    static const pet_sound_t replies[3] = {
+        SND_MEOW_GREET, SND_MEOW_HAPPY, SND_TRILL
+    };
+    pet_audio_play(replies[s_vrng % 3]);
+}
+
 static void audio_task(void *arg) {
     (void)arg;
     static int16_t chunk[CHUNK];
     pet_sound_t want;
     for (;;) {
-        if (xQueueReceive(s_play_q, &want, portMAX_DELAY) != pdTRUE) continue;
+        // 空闲时以 100ms 为粒度等新声音,顺便周期性听一耳朵麦克风
+        if (xQueueReceive(s_play_q, &want, pdMS_TO_TICKS(100)) != pdTRUE) {
+            voice_poll();
+            continue;
+        }
         if (s_muted || !s_ok) continue;  // 静音:直接消费掉
-        synth_start(&s_syn, want);
+        bool is_sample = samp_start(want);
+        if (!is_sample) synth_start(&s_syn, want);
         while (s_ok) {
             uint32_t n = 0;
             while (n < CHUNK) {
-                if (!synth_next(&s_syn, &chunk[n])) goto sound_done;
+                bool more = is_sample ? samp_next(&s_samp, &chunk[n])
+                                      : synth_next(&s_syn, &chunk[n]);
+                if (!more) goto sound_done;
                 n++;
             }
             bsp_audio_write(chunk, sizeof(int16_t) * CHUNK);
         }
-    sound_done:;
+    sound_done:
+        s_last_sound_us = (uint64_t)esp_timer_get_time();
     }
 }
 
@@ -281,7 +404,7 @@ bool pet_audio_init(void) {
         ESP_LOGW(TAG, "音频格式设置失败");
         return false;
     }
-    bsp_audio_set_volume(70);
+    pet_audio_set_level(s_level);  // 上电默认高音量,静音/中档由 main 从 NVS 恢复
     s_play_q = xQueueCreate(PLAY_QUEUE_DEPTH, sizeof(pet_sound_t));
     if (s_play_q == NULL) return false;
     if (xTaskCreate(audio_task, "kaka_audio", 4096, NULL, 4, &s_task) != pdPASS) {
@@ -298,6 +421,14 @@ void pet_audio_play(pet_sound_t s) {
     xQueueSend(s_play_q, &s, 0);
 }
 
-void pet_audio_set_muted(bool muted) {
-    s_muted = muted;
+void pet_audio_set_level(uint8_t level) {
+    if (level > 2) level = 2;
+    s_level = level;
+    s_muted = (level == 0);
+    bsp_audio_set_volume(level == 2 ? 100 : (level == 1 ? 60 : 0));
+}
+
+void pet_audio_set_stage(uint8_t stage) {
+    s_pitch = stage == 0 ? 1.16f : (stage == 1 ? 1.08f : 1.0f);
+    s_step_q16 = (uint32_t)(65536.0f * s_pitch + 0.5f);  // 采样同步变调
 }

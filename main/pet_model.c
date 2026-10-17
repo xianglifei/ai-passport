@@ -62,10 +62,14 @@ static void decay_pass(pet_model_t *m, uint32_t delta_ms) {
     }
 }
 
-void pet_model_cold_boot(pet_model_t *m) {
+uint8_t pet_model_cold_boot(pet_model_t *m) {
     // 读档后统一补 6 小时等效衰减;衰减被封顶在下限,卡卡只是"有点想你"
+    uint8_t full_before = m->fullness;
     decay_pass(m, PET_COLD_BOOT_MS);
     m->idle_ms = 0;
+    // 思念等级:断电期间掉得越多越想你(供 UI 播重逢演出)
+    uint8_t drop = (uint8_t)(full_before - m->fullness);
+    return drop >= 25 ? 2 : (drop >= 10 ? 1 : 0);
 }
 
 bool pet_model_should_meow(pet_model_t *m) {
@@ -111,13 +115,16 @@ pet_interact_t pet_model_interact(pet_model_t *m) {
     switch (m->activity) {
     case PET_ACTIVITY_FEED:
         if (m->fullness >= 95) {
-            // 礼貌拒喂:活动就此结束
-            pet_model_finish_activity(m);
+            // 礼貌拒喂:不加不减,留在场景里让 UI 演害羞
+            // (由 main 统计连续拒喂次数,连续 3 次温柔收尾)
             return PET_INTERACT_REFUSED;
         }
         m->fullness = gain(m->fullness, 10);
         m->feed_fish++;
         m->feed_fish_this++;
+        if (m->feed_fish % PET_MILESTONE_STEP == 0) {
+            m->milestone = PET_ACTIVITY_FEED;
+        }
         if (m->feed_fish_this >= 3) {
             // 一顿吃 3 条鱼,吃饱收尾
             pet_model_finish_activity(m);
@@ -127,6 +134,9 @@ pet_interact_t pet_model_interact(pet_model_t *m) {
     case PET_ACTIVITY_BRUSH:
         m->brush_strokes_this++;
         m->brush_strokes++;
+        if (m->brush_strokes % PET_MILESTONE_STEP == 0) {
+            m->milestone = PET_ACTIVITY_BRUSH;
+        }
         m->clean = gain(m->clean, 8);
         if (m->brush_strokes_this % PET_BRUSH_SHINE_STROKES == 0) {
             m->happy = gain(m->happy, 5);  // 发亮小奖励,活动圆满结束
@@ -150,10 +160,16 @@ void pet_model_finish_activity(pet_model_t *m) {
     case PET_ACTIVITY_SUN:
         m->happy = gain(m->happy, 40);
         m->sun_count++;
+        if (m->sun_count % PET_MILESTONE_STEP == 0) {
+            m->milestone = PET_ACTIVITY_SUN;
+        }
         break;
     case PET_ACTIVITY_WALK:
         m->happy = gain(m->happy, 35);
         m->walk_count++;
+        if (m->walk_count % PET_MILESTONE_STEP == 0) {
+            m->milestone = PET_ACTIVITY_WALK;
+        }
         break;
     default:
         break;  // 喂食/刷毛的收益已按次结算
@@ -163,6 +179,19 @@ void pet_model_finish_activity(pet_model_t *m) {
     m->brush_strokes_this = 0;
     m->feed_fish_this = 0;
     m->idle_ms = 0;
+}
+
+uint8_t pet_model_growth_stage(const pet_model_t *m) {
+    uint32_t care = m->feed_fish + m->brush_strokes + m->sun_count + m->walk_count;
+    if (care >= PET_GROWTH_T2) return 2;
+    if (care >= PET_GROWTH_T1) return 1;
+    return 0;
+}
+
+pet_activity_t pet_model_take_milestone(pet_model_t *m) {
+    pet_activity_t hit = m->milestone;
+    m->milestone = PET_ACTIVITY_NONE;
+    return hit;
 }
 
 pet_want_t pet_model_want(const pet_model_t *m) {
